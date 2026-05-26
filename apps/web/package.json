@@ -1,0 +1,25 @@
+{
+  "name": "@w3c-process/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@w3c-process/ui": "file:../../packages/ui",
+    "next": "16.2.4",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/react": "19.0.2",
+    "@types/react-dom": "19.0.2",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.4",
+    "typescript": "5.7.2"
+  }
+}

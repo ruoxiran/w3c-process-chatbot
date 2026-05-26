@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import httpx
+
+from app.models.schemas import ChatTurn, Citation, CompiledContext, DraftContext, EvidenceCoverage, ModelInfo, ProcessState, TaskPlan, W3CEntity
+from app.services.ollama import OllamaClient, _clean_model_text, _extract_json_object
+
+
+@dataclass(frozen=True)
+class OpenAICompatibleGeneration:
+    text: str
+    model: str
+
+
+class OpenAICompatibleClient:
+    """Client for OpenAI-compatible `/v1/chat/completions` APIs.
+
+    This works with OpenAI, OpenRouter, self-hosted vLLM, and many internal
+    model gateways as long as they implement the chat completions shape.
+    """
+
+    def __init__(self, base_url: str, api_key: str | None, timeout_seconds: float = 120) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout_seconds = timeout_seconds
+
+    def list_models(self) -> list[ModelInfo]:
+        response = httpx.get(
+            f"{self.base_url}/models",
+            headers=self._headers(),
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        models: list[ModelInfo] = []
+        for item in payload.get("data", []):
+            if not isinstance(item, dict):
+                continue
+            name = item.get("id")
+            if not isinstance(name, str) or not name:
+                continue
+            models.append(ModelInfo(name=name, provider="openai-compatible"))
+        return models
+
+    def generate_json(self, *, model: str, prompt: str, num_predict: int = 500) -> dict[str, object]:
+        text = self._chat(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Return only a valid JSON object. Do not include markdown or explanations.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            max_tokens=num_predict,
+            response_format={"type": "json_object"},
+        )
+        return _extract_json_object(_clean_model_text(text))
+
+    def generate_answer(
+        self,
+        *,
+        model: str,
+        question: str,
+        locale: str,
+        citations: list[Citation],
+        fallback_answer: str,
+        fallback_next_steps: list[str],
+        history: list[ChatTurn] | None = None,
+        entities: list[W3CEntity] | None = None,
+        task_plan: TaskPlan | None = None,
+        process_state: ProcessState | None = None,
+        evidence_coverage: EvidenceCoverage | None = None,
+        draft_contexts: list[DraftContext] | None = None,
+        compiled_context: CompiledContext | None = None,
+        supplementary_context: str | None = None,
+    ) -> OpenAICompatibleGeneration:
+        prompt = OllamaClient("", self.timeout_seconds)._build_prompt(
+            question=question,
+            locale=locale,
+            citations=citations,
+            fallback_answer=fallback_answer,
+            fallback_next_steps=fallback_next_steps,
+            history=history or [],
+            entities=entities or [],
+            task_plan=task_plan,
+            process_state=process_state,
+            evidence_coverage=evidence_coverage,
+            draft_contexts=draft_contexts or [],
+            compiled_context=compiled_context,
+            supplementary_context=supplementary_context,
+        )
+        text = self._chat(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a W3C Process assistant constrained by source-grounded evidence. "
+                        "Follow the user's prompt rules exactly and do not reveal hidden reasoning."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=900,
+        )
+        return OpenAICompatibleGeneration(text=_clean_model_text(text), model=model)
+
+    def _chat(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, object]],
+        temperature: float,
+        max_tokens: int,
+        response_format: dict[str, str] | None = None,
+    ) -> str:
+        payload: dict[str, object] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if response_format:
+            payload["response_format"] = response_format
+        response = httpx.post(
+            f"{self.base_url}/chat/completions",
+            headers=self._headers(),
+            json=payload,
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+        data = response.json()
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        first = choices[0]
+        if not isinstance(first, dict):
+            return ""
+        message = first.get("message")
+        if not isinstance(message, dict):
+            return ""
+        content = message.get("content")
+        return content if isinstance(content, str) else ""
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers

@@ -1,0 +1,24 @@
+:root {
+  --w3c-blue: #005a9c;
+  --w3c-blue-dark: #003f6d;
+  --w3c-blue-light: #e8f2fb;
+  --w3c-text: #1f1f1f;
+  --w3c-muted: #5a5a5a;
+  --w3c-border: #d8d8d8;
+  --w3c-background: #ffffff;
+  --w3c-panel: #f7f7f7;
+  --w3c-success: #2e7d32;
+  --w3c-warning: #8a5a00;
+  --w3c-danger: #b00020;
+  --w3c-focus: #f9dc5c;
+  --w3c-radius: 4px;
+  --w3c-space-1: 0.25rem;
+  --w3c-space-2: 0.5rem;
+  --w3c-space-3: 0.75rem;
+  --w3c-space-4: 1rem;
+  --w3c-space-6: 1.5rem;
+  --w3c-space-8: 2rem;
+  --w3c-font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --w3c-font-serif: Georgia, "Times New Roman", serif;
+}
+

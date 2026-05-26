@@ -1,0 +1,5 @@
+# Optional RAG/workflow integrations for the production indexer.
+# The scaffolded API runs without these so local setup remains fast.
+langgraph==0.2.60
+llama-index-core==0.12.52.post1
+qdrant-client==1.12.1

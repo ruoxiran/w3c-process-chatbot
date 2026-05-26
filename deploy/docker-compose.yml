@@ -1,0 +1,61 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/docker/api.Dockerfile
+    env_file:
+      - ../.env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - qdrant
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/docker/web.Dockerfile
+    env_file:
+      - ../.env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: w3c
+      POSTGRES_PASSWORD: w3c
+      POSTGRES_DB: w3c_process
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.5
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    profiles: ["gpu"]
+    environment:
+      MODEL: ${LLM_MODEL:-Qwen/Qwen3-8B}
+    ports:
+      - "8001:8000"
+    command: ["--model", "${LLM_MODEL:-Qwen/Qwen3-8B}", "--host", "0.0.0.0"]
+
+volumes:
+  postgres-data:
+  qdrant-data:

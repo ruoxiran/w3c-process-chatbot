@@ -1,0 +1,7 @@
+{
+  "name": "@w3c-process/ui",
+  "version": "0.1.0",
+  "private": true,
+  "main": "tokens.css"
+}
+
