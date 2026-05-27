@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     live_fetch_max_chars: int = 3500
     live_fetch_timeout_seconds: float = 8.0
     feedback_log_path: str = "data/feedback/feedback.jsonl"
+    expose_openapi_docs: bool = True  # set false in production to hide /docs /redoc /openapi.json
     index_refresh_cron: str = "0 */6 * * *"
     require_citations: bool = True
     enable_member_only_sources: bool = False

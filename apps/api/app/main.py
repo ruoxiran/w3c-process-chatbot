@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+import re
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
@@ -32,7 +34,13 @@ from app.services.openai_compatible import OpenAICompatibleClient
 from app.workflows.chat_workflow import ChatWorkflow
 
 settings = get_settings()
-app = FastAPI(title="W3C Process Chatbot API", version="0.1.0")
+app = FastAPI(
+    title="W3C Process Chatbot API",
+    version="0.1.0",
+    docs_url="/docs" if settings.expose_openapi_docs else None,
+    redoc_url="/redoc" if settings.expose_openapi_docs else None,
+    openapi_url="/openapi.json" if settings.expose_openapi_docs else None,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -93,7 +101,7 @@ def models() -> ModelsResponse:
             ).list_models()
             return ModelsResponse(default_model=settings.llm_model, models=ollama_models)
         except Exception as exc:  # pragma: no cover - external service fallback
-            return ModelsResponse(default_model=settings.llm_model, models=[], error=str(exc))
+            return ModelsResponse(default_model=settings.llm_model, models=[], error=type(exc).__name__)
     if settings.llm_provider in {"openai", "openai-compatible", "openrouter"}:
         try:
             online_models = OpenAICompatibleClient(
@@ -112,7 +120,7 @@ def models() -> ModelsResponse:
                         is_embedding=False,
                     )
                 ],
-                error=str(exc),
+                error=type(exc).__name__,
             )
     return ModelsResponse(default_model=settings.llm_model, models=[])
 
@@ -128,9 +136,18 @@ async def refresh_index() -> dict[str, object]:
     }
 
 
+_SHORTNAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,80}$")
+
+
 @app.post("/compiled/rebuild")
 def rebuild_compiled(shortnames: str | None = None) -> dict[str, object]:
-    targets = [item.strip() for item in (shortnames or "").split(",") if item.strip()] or None
+    raw = [item.strip() for item in (shortnames or "").split(",") if item.strip()]
+    if raw and len(raw) > 50:
+        raise HTTPException(status_code=400, detail="too many shortnames; max 50")
+    for token in raw:
+        if not _SHORTNAME_RE.match(token):
+            raise HTTPException(status_code=400, detail=f"invalid shortname: {token!r}")
+    targets = raw or None
     results = compiled_store().rebuild_known(targets)
     return {"status": "compiled-rebuilt", "count": len(results), "keys": [item.key for item in results]}
 
@@ -170,7 +187,22 @@ def run_llm_judge_endpoint(
 
 @app.post("/feedback", response_model=FeedbackResponse)
 def submit_feedback(request: FeedbackRequest) -> FeedbackResponse:
-    stored = feedback_store().append(request.model_dump(mode="json"))
+    # Whitelist fields explicitly. Client-supplied ``audit`` is intentionally
+    # NOT persisted: it is an unbounded dict[Any] surface that would otherwise
+    # let any caller pollute the JSONL with arbitrary nested structures.
+    record = {
+        "rating": request.rating,
+        "conversation_id": request.conversation_id,
+        "message_id": request.message_id,
+        "question": request.question,
+        "answer": request.answer,
+        "comment": request.comment,
+        "model": request.model,
+        "in_scope": request.in_scope,
+        "confidence": request.confidence,
+        "citation_urls": [str(u) for u in request.citation_urls],
+    }
+    stored = feedback_store().append(record)
     return FeedbackResponse(received_at=stored["received_at"])
 
 

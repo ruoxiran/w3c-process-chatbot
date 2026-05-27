@@ -70,7 +70,8 @@ class ChatWorkflow:
         )
 
     def classify(self, request: ChatRequest) -> ClassifyResponse:
-        decision = classify_scope(request.message)
+        history_text = "\n".join(turn.content for turn in request.history)
+        decision = classify_scope(request.message, history_text=history_text)
         return ClassifyResponse(
             in_scope=decision.in_scope,
             reason=decision.reason,
@@ -236,7 +237,7 @@ class ChatWorkflow:
                 )
             )
         except Exception as exc:  # pragma: no cover - external service fallback
-            audit["w3c_api_error"] = str(exc)
+            audit["w3c_api_error"] = type(exc).__name__
             trace.append(
                 WorkflowStep(
                     id="w3c_api_resolver",
@@ -260,7 +261,7 @@ class ChatWorkflow:
                 )
             )
         except Exception as exc:  # pragma: no cover - external service fallback
-            audit["draft_context_error"] = str(exc)
+            audit["draft_context_error"] = type(exc).__name__
             trace.append(
                 WorkflowStep(
                     id="draft_context_resolver",
@@ -286,7 +287,7 @@ class ChatWorkflow:
                 )
             )
         except Exception as exc:  # pragma: no cover - local filesystem fallback
-            audit["compiled_context_error"] = str(exc)
+            audit["compiled_context_error"] = type(exc).__name__
             trace.append(
                 WorkflowStep(
                     id="compiled_context_resolver",
@@ -398,6 +399,7 @@ class ChatWorkflow:
                     primary_url,
                     max_chars=self.settings.live_fetch_max_chars,
                     timeout=self.settings.live_fetch_timeout_seconds,
+                    allowlist=self.settings.allowlist_entries,
                 )
             trace.append(
                 WorkflowStep(
@@ -453,7 +455,7 @@ class ChatWorkflow:
             except Exception as exc:  # pragma: no cover - external service fallback
                 model_generation = "template_fallback"
                 audit["model_generation"] = model_generation
-                audit["model_error"] = str(exc)
+                audit["model_error"] = type(exc).__name__
         elif self.settings.llm_provider in {"openai", "openai-compatible", "openrouter"}:
             try:
                 generation = self.openai_compatible_client.generate_answer(
@@ -482,7 +484,7 @@ class ChatWorkflow:
             except Exception as exc:  # pragma: no cover - external service fallback
                 model_generation = "template_fallback"
                 audit["model_generation"] = model_generation
-                audit["model_error"] = str(exc)
+                audit["model_error"] = type(exc).__name__
         else:
             audit["model_generation"] = model_generation
 

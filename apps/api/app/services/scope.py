@@ -1,4 +1,9 @@
+import re
+import unicodedata
 from dataclasses import dataclass, field
+
+
+_ZERO_WIDTH_RE = re.compile(r"[​-‏‪-‮⁠-⁤﻿]")
 
 
 # Unambiguously W3C-domain terms — matching any of these means high-confidence in-scope
@@ -91,14 +96,33 @@ class ScopeDecision:
     confidence: float = 1.0
 
 
-def classify_scope(message: str) -> ScopeDecision:
+def _normalize_for_injection_scan(text: str) -> str:
+    """Defeat trivial bypasses: Unicode homoglyphs, zero-width characters, case."""
+    # NFKC folds compatibility characters (full-width, ligatures) and many
+    # homoglyph variants into their canonical ASCII forms.
+    normalized = unicodedata.normalize("NFKC", text)
+    normalized = _ZERO_WIDTH_RE.sub("", normalized)
+    return normalized.lower()
+
+
+def detect_injection(text: str) -> bool:
+    """Apply normalization before pattern matching so trivial obfuscations fail."""
+    normalized = _normalize_for_injection_scan(text)
+    return any(pattern in normalized for pattern in INJECTION_PATTERNS)
+
+
+def classify_scope(message: str, *, history_text: str = "") -> ScopeDecision:
     text = message.lower()
     matched = [
         topic
         for topic, keywords in PROCESS_TOPICS.items()
         if any(keyword.lower() in text for keyword in keywords)
     ]
-    injection_risk = any(pattern in text for pattern in INJECTION_PATTERNS)
+    # Scan the current message AND any provided conversation history.
+    # An attacker can spread an injection across history turns.
+    injection_risk = detect_injection(message) or (
+        bool(history_text) and detect_injection(history_text)
+    )
 
     if not matched:
         return ScopeDecision(False, "Question is outside the W3C Process assistant scope.", [], injection_risk, confidence=0.0)

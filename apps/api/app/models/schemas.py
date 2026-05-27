@@ -105,9 +105,9 @@ class W3CEntity(BaseModel):
 
 
 class DraftSnippet(BaseModel):
-    path: str
-    title: str | None = None
-    text: str
+    path: str = Field(max_length=400)
+    title: str | None = Field(default=None, max_length=400)
+    text: str = Field(max_length=4000)
     url: HttpUrl | str | None = None
 
 
@@ -160,10 +160,10 @@ class ChatTurn(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
-    locale: str = "auto"
-    conversation_id: str | None = None
-    user_role: str | None = None
-    model: str | None = None
+    locale: str = Field(default="auto", pattern=r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?$|^auto$", max_length=16)
+    conversation_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    user_role: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,40}$")
+    model: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,80}$")
     history: list[ChatTurn] = Field(default_factory=list, max_length=12)
 
 
@@ -269,15 +269,18 @@ class EvalRunResponse(BaseModel):
 
 class FeedbackRequest(BaseModel):
     rating: str = Field(pattern="^(up|down)$")
-    conversation_id: str | None = None
-    message_id: str | None = None
+    conversation_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    message_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
     question: str = Field(min_length=1, max_length=8000)
     answer: str = Field(min_length=1, max_length=20000)
     comment: str | None = Field(default=None, max_length=4000)
-    model: str | None = None
+    model: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,80}$")
     in_scope: bool | None = None
-    confidence: float | None = None
-    citation_urls: list[str] = Field(default_factory=list, max_length=20)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    citation_urls: list[HttpUrl | str] = Field(default_factory=list, max_length=20)
+    # Server-side audit fields are appended by the API; client-supplied audit
+    # is intentionally NOT persisted to prevent JSONL pollution and DoS via
+    # unbounded nested structures. See feedback service for the trusted audit.
     audit: dict[str, Any] = Field(default_factory=dict)
 
 

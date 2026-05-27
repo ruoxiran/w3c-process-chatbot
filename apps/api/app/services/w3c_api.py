@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from dataclasses import asdict
 from dataclasses import dataclass
@@ -24,10 +25,6 @@ class CatalogItem:
 
 
 class W3CAPIClient:
-    _catalog_cache: dict[str, tuple[float, list[CatalogItem]]] = {}
-    _detail_cache: dict[str, tuple[float, dict[str, object]]] = {}
-    _persistent_loaded_paths: set[str] = set()
-
     def __init__(self, settings: Settings) -> None:
         self.enabled = settings.w3c_api_enabled
         self.base_url = settings.w3c_api_base_url.rstrip("/")
@@ -36,6 +33,12 @@ class W3CAPIClient:
         self.catalog_pages = max(1, settings.w3c_api_catalog_pages)
         self.persistent_cache_enabled = settings.w3c_api_persistent_cache_enabled
         self.cache_path = Path(settings.w3c_api_cache_path)
+        # Instance-level caches + lock. Class-level mutable dicts were a
+        # threading race under multi-worker / async deployments.
+        self._catalog_cache: dict[str, tuple[float, list[CatalogItem]]] = {}
+        self._detail_cache: dict[str, tuple[float, dict[str, object]]] = {}
+        self._persistent_loaded_paths: set[str] = set()
+        self._cache_lock = threading.Lock()
         if self.persistent_cache_enabled:
             self._load_persistent_cache()
 
@@ -95,14 +98,16 @@ class W3CAPIClient:
 
     def _catalog(self) -> list[CatalogItem]:
         cache_key = f"{self.base_url}:catalog:{self.catalog_pages}"
-        cached = self._catalog_cache.get(cache_key)
+        with self._cache_lock:
+            cached = self._catalog_cache.get(cache_key)
         if cached and time.time() - cached[0] < self.cache_ttl:
             return cached[1]
 
         items: list[CatalogItem] = []
         items.extend(self._catalog_endpoint("specifications", "specification"))
         items.extend(self._catalog_endpoint("groups", "group"))
-        self._catalog_cache[cache_key] = (time.time(), items)
+        with self._cache_lock:
+            self._catalog_cache[cache_key] = (time.time(), items)
         self._save_persistent_cache()
         return items
 
@@ -206,12 +211,14 @@ class W3CAPIClient:
         return [str(item.get("title")) for item in values if isinstance(item, dict) and item.get("title")][:5]
 
     def _detail(self, api_url: str) -> dict[str, object]:
-        cached = self._detail_cache.get(api_url)
+        with self._cache_lock:
+            cached = self._detail_cache.get(api_url)
         if cached and time.time() - cached[0] < self.cache_ttl:
             return cached[1]
         payload = self._get(api_url)
         detail = payload if isinstance(payload, dict) else {}
-        self._detail_cache[api_url] = (time.time(), detail)
+        with self._cache_lock:
+            self._detail_cache[api_url] = (time.time(), detail)
         self._save_persistent_cache()
         return detail
 
@@ -257,25 +264,28 @@ class W3CAPIClient:
     def _save_persistent_cache(self) -> None:
         if not self.persistent_cache_enabled:
             return
-        payload = {
-            "catalog": {
-                key: {
-                    "timestamp": timestamp,
-                    "items": [asdict(item) for item in items],
-                }
-                for key, (timestamp, items) in self._catalog_cache.items()
-            },
-            "detail": {
-                url: {
-                    "timestamp": timestamp,
-                    "payload": detail,
-                }
-                for url, (timestamp, detail) in self._detail_cache.items()
-            },
-        }
+        with self._cache_lock:
+            payload = {
+                "catalog": {
+                    key: {
+                        "timestamp": timestamp,
+                        "items": [asdict(item) for item in items],
+                    }
+                    for key, (timestamp, items) in self._catalog_cache.items()
+                },
+                "detail": {
+                    url: {
+                        "timestamp": timestamp,
+                        "payload": detail,
+                    }
+                    for url, (timestamp, detail) in self._detail_cache.items()
+                },
+            }
         try:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-            self.cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp_path = self.cache_path.with_suffix(self.cache_path.suffix + ".tmp")
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp_path.replace(self.cache_path)
         except OSError:
             return
 

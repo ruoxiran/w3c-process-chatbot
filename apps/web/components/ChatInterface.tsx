@@ -760,6 +760,8 @@ function FeedbackControls({ response, question, messageId, model }: FeedbackCont
     setSubmitting(true);
     setError(null);
     try {
+      // Audit blob is reconstructed server-side from the trusted ChatResponse
+      // for the message. The client does not (and cannot) send a trusted audit.
       await submitFeedback({
         rating,
         question,
@@ -769,12 +771,7 @@ function FeedbackControls({ response, question, messageId, model }: FeedbackCont
         model,
         inScope: response.in_scope,
         confidence: response.confidence,
-        citationUrls: response.citations.map((c) => c.url),
-        audit: {
-          source_version: response.source_version,
-          evidence_coverage: response.evidence_coverage,
-          process_state: response.process_state
-        }
+        citationUrls: response.citations.map((c) => c.url)
       });
       setSubmitted(rating);
       if (rating === "up") {

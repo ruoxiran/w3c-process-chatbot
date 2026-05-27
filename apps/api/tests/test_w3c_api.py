@@ -29,10 +29,8 @@ def test_w3c_api_persistent_cache_round_trip(tmp_path) -> None:
     )
     client._save_persistent_cache()
 
-    W3CAPIClient._catalog_cache.clear()
-    W3CAPIClient._detail_cache.clear()
-    W3CAPIClient._persistent_loaded_paths.clear()
-
+    # Cache is instance-level now (was class-level). A fresh instance
+    # exercises the persistent reload path directly.
     restored = W3CAPIClient(settings)
 
     assert catalog_key in restored._catalog_cache
