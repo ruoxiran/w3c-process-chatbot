@@ -19,6 +19,7 @@ data/sources/
 data/corpus/
 data/cache/
 data/feedback/
+apps/api/data/
 reports/
 .claude/
 .playwright-cli/

@@ -1,120 +1,58 @@
 # W3C Process Chatbot
 
-Internal W3C Process assistant built with Harness Engineering, deterministic workflow gates, and RAG over authoritative W3C Process and Guidebook sources.
+A scope-gated chat assistant for the W3C Process Document and Guidebook. It
+only answers W3C standards-workflow questions, grounds every claim in
+allowlisted sources, and exposes the full retrieval/workflow trace next to
+each answer.
 
-## What This Includes
+It is not an open chatbot. It is a deterministic workflow with the model in
+a constrained synthesis role.
 
-- `apps/api`: FastAPI service with scope classification, source allowlist checks, RAG retrieval hooks, citation checks, audit-ready responses, and eval endpoints.
-- `apps/web`: Next.js UI styled after the W3C Design System and Manual of Style.
-- `deploy/docker-compose.yml`: local development stack for API, web, PostgreSQL, Redis, Qdrant, and a vLLM-compatible service slot.
-- `packages/ui`: shared W3C design tokens.
+## Layout
 
-The first implementation is intentionally safe by default: if no local model or indexed corpus is available, the API still starts and returns grounded fallback answers or scope refusals. Connect vLLM, Qdrant, and the ingestion worker to enable full RAG-backed generation.
+```text
+apps/api      FastAPI backend, workflow, retrieval, eval harness
+apps/web      Next.js chat UI with a workflow / sources / entities inspector
+packages/ui   Shared W3C design tokens
+data/         Corpus, compiled spec pages, runtime caches (gitignored)
+deploy/       Docker Compose for local + RAG infra stack
+scripts/      Ingestion, embeddings cache, evaluation utilities
+```
 
-## Quick Start
+## Quick start
 
 ```bash
 cp .env.example .env
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r apps/api/requirements.txt
 uvicorn app.main:app --reload --app-dir apps/api
-```
-
-Install the optional production RAG adapters when you are ready to connect LangGraph, LlamaIndex, and Qdrant:
-
-```bash
-pip install -r apps/api/requirements-rag.txt
 ```
 
 In another terminal:
 
 ```bash
-cd apps/web
-npm install
-npm run dev
+cd apps/web && npm install && npm run dev
 ```
 
-Open `http://localhost:3000`.
+Open <http://localhost:3000>.
 
-## Starting A New Agent Session
+The API and web both start without a model or vector index; the workflow
+returns grounded fallback answers and scope refusals. Wire up a provider via
+`.env` to get full LLM generation.
 
-For a fresh coding session, load the memory files first:
+## Model providers
 
-```text
-Please read SESSION_BOOTSTRAP.md, PROJECT_MEMORY.md, and PLAN.md before making changes.
-```
+`LLM_PROVIDER` picks the backend:
 
-- `SESSION_BOOTSTRAP.md`: shortest operational context for a new session.
-- `PROJECT_MEMORY.md`: project decisions, completed work, TODOs, important files, and architecture notes.
-- `PLAN.md`: detailed evolving implementation plan.
-- `SYSTEM_ARCHITECTURE.md`: current end-to-end system design, authority model, data flow, and runtime workflow.
+| Provider           | When to use                                              |
+|--------------------|----------------------------------------------------------|
+| `ollama`           | Local model via Ollama (`LLM_MODEL`, e.g. `qwen3:8b`)    |
+| `openai-compatible`| Any OpenAI-shaped `/v1/chat/completions` endpoint        |
+| `openai`           | OpenAI                                                   |
+| `openrouter`       | OpenRouter                                               |
+| `template`         | No LLM, deterministic template only                      |
 
-## Docker Compose
-
-```bash
-cp .env.example .env
-docker compose -f deploy/docker-compose.yml up --build
-```
-
-The compose file includes a placeholder vLLM service profile. Start it only on a GPU host and update `LLM_MODEL` as needed.
-
-## Environment
-
-See `.env.example` for all configuration. Important settings:
-
-- `LLM_BASE_URL`: OpenAI-compatible vLLM endpoint.
-- `LLM_PROVIDER`: `ollama`, `openai-compatible`, `openai`, `openrouter`, or `template`.
-- `LLM_MODEL`: local instruct model name for Ollama.
-- `OPENAI_COMPATIBLE_BASE_URL`: online or internal OpenAI-compatible `/v1` endpoint.
-- `OPENAI_COMPATIBLE_API_KEY`: API key for the online/internal provider.
-- `OPENAI_COMPATIBLE_MODEL`: default model when using the OpenAI-compatible provider.
-- `QDRANT_URL`: vector database endpoint.
-- `SOURCE_ALLOWLIST`: authoritative domains and repositories.
-- `ENABLE_MEMBER_ONLY_SOURCES`: keep `false` for v1 unless per-user retrieval filtering is implemented.
-
-## Safety Model
-
-The workflow treats user input as untrusted. W3C Process and Guidebook context is retrieved only from allowlisted sources. Normative claims require citations; Guidebook-only claims are labelled as practice guidance. Out-of-scope questions are refused with a short explanation.
-
-## Useful Commands
-
-```bash
-pytest apps/api
-npm --prefix apps/web run lint
-```
-
-Run the backend regression harness:
-
-```bash
-curl -s -X POST http://127.0.0.1:8000/eval/run
-```
-
-The eval harness checks more than scope: expected workflow intent, source families, required citation URLs, entity grounding, compiled-context use, answer/next-step terms, and forbidden misgrounding terms.
-
-The web UI also exposes this in the right-side `Quality` tab. The default eval run is deterministic and offline-friendly, so it is suitable as a quick regression signal before retrieval or model changes.
-
-## Dense Retrieval Cache
-
-The local retriever always supports BM25-style lexical scoring and sparse TF-IDF similarity. To add dense retrieval with Ollama embeddings:
-
-```bash
-ollama pull qwen3-embedding:4b
-./.venv/bin/python scripts/build_embedding_cache.py --model qwen3-embedding:4b --resume
-```
-
-Then set:
-
-```env
-RETRIEVAL_DENSE_ENABLED=true
-OLLAMA_EMBEDDING_MODEL=qwen3-embedding:4b
-```
-
-If the cache or embedding model is unavailable, retrieval falls back to the existing lexical/sparse path.
-
-## Online Model Provider
-
-The assistant can use any OpenAI-compatible chat-completions provider while keeping the same W3C safety harness:
+For an OpenAI-compatible provider:
 
 ```env
 LLM_PROVIDER=openai-compatible
@@ -123,4 +61,90 @@ OPENAI_COMPATIBLE_API_KEY=...
 OPENAI_COMPATIBLE_MODEL=gpt-4.1
 ```
 
-For OpenRouter or an internal model gateway, point `OPENAI_COMPATIBLE_BASE_URL` at that provider's `/v1` endpoint and set `OPENAI_COMPATIBLE_MODEL` to the provider model id. The model improves synthesis quality, but Process / Guidebook citations and evidence checks still control the answer.
+The model only synthesizes language. Process and Guidebook citations
+and the evidence checks still gate what the answer can claim.
+
+## Architecture
+
+See [ARCHITECTURE.md](ARCHITECTURE.md). Short version:
+
+1. **Scope classifier** rejects anything that isn't a W3C Process workflow
+   question.
+2. **Task planner + entity resolver** figure out the intent and resolve any
+   specifications or groups against the public W3C API.
+3. **Retrieval** runs against a local corpus of Process, Guidebook, and
+   related policy text, optionally augmented by compiled per-spec context
+   and read-only snippets from official W3C GitHub repos.
+4. **Evidence check** verifies the right sources are present before the
+   model is allowed to synthesize.
+5. **Answer generator** is the model — bounded by the prompt and the
+   retrieved chunks.
+6. **Citation + injection checks** validate the result before it leaves the
+   workflow.
+
+Every step is logged to a workflow trace that the UI surfaces alongside the
+answer.
+
+## Safety
+
+- User input is untrusted; conversation history is used only to resolve
+  references in follow-ups, never as authority.
+- Sources are allowlisted by domain (`SOURCE_ALLOWLIST`); nothing else can
+  be cited.
+- W3C Process citations are normative; Guidebook citations are guidance;
+  W3C API + GitHub + compiled context are grounding hints, not authority.
+- Out-of-scope questions return a short refusal.
+
+## Docker Compose
+
+```bash
+cp .env.example .env
+docker compose -f deploy/docker-compose.yml up --build
+```
+
+The compose stack includes Postgres, Redis, Qdrant, and a placeholder vLLM
+service profile (start it only on a GPU host).
+
+## Evaluation
+
+Structured offline harness (deterministic, no LLM required):
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/eval/run
+```
+
+It checks intent classification, source families, citation URLs, entity
+grounding, compiled-context use, required answer terms, and forbidden
+misgrounding terms. The web UI exposes the same run under the `Quality`
+tab.
+
+LLM-as-judge run (requires a provider configured):
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/eval/llm-judge
+```
+
+## Dense retrieval (optional)
+
+The retriever defaults to BM25 + TF-IDF on the local corpus. To enable
+dense retrieval with Ollama embeddings:
+
+```bash
+ollama pull qwen3-embedding:4b
+./.venv/bin/python scripts/build_embedding_cache.py \
+  --model qwen3-embedding:4b --resume
+```
+
+```env
+RETRIEVAL_DENSE_ENABLED=true
+OLLAMA_EMBEDDING_MODEL=qwen3-embedding:4b
+```
+
+If the cache or embedding model is missing, retrieval falls back to lexical.
+
+## Tests
+
+```bash
+cd apps/api && python -m pytest -q
+cd apps/web && npm run lint
+```
