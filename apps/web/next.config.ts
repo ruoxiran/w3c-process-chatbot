@@ -6,12 +6,19 @@ const appRoot = dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = resolve(appRoot, "../..");
 
 const apiOrigin = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+const isDev = process.env.NODE_ENV !== "production";
 
 // Restrictive CSP. ``connect-src`` includes the API origin so the chat /
 // feedback POST requests succeed; everything else is locked down.
+// Dev mode needs ``'unsafe-eval'`` because React DevTools rebuilds call
+// stacks via eval(); this is NOT added in production.
+const scriptSrc = isDev
+  ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+  : "script-src 'self' 'unsafe-inline'";
+
 const csp = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  scriptSrc,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https://www.w3.org",
   "font-src 'self' data:",

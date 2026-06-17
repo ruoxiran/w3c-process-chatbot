@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import httpx
@@ -106,9 +108,93 @@ class OpenAICompatibleClient:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            max_tokens=900,
+            max_tokens=600,
         )
         return OpenAICompatibleGeneration(text=_clean_model_text(text), model=model)
+
+    def stream_answer(
+        self,
+        *,
+        model: str,
+        question: str,
+        locale: str,
+        citations: list[Citation],
+        fallback_answer: str,
+        fallback_next_steps: list[str],
+        history: list[ChatTurn] | None = None,
+        entities: list[W3CEntity] | None = None,
+        task_plan: TaskPlan | None = None,
+        process_state: ProcessState | None = None,
+        evidence_coverage: EvidenceCoverage | None = None,
+        draft_contexts: list[DraftContext] | None = None,
+        compiled_context: CompiledContext | None = None,
+        supplementary_context: str | None = None,
+    ) -> Iterator[str]:
+        """Yield raw text deltas from the chat completions streaming API.
+
+        Caller is responsible for assembling and post-cleaning the final text
+        (call ``_clean_model_text`` on the joined result).
+        """
+        prompt = OllamaClient("", self.timeout_seconds)._build_prompt(
+            question=question,
+            locale=locale,
+            citations=citations,
+            fallback_answer=fallback_answer,
+            fallback_next_steps=fallback_next_steps,
+            history=history or [],
+            entities=entities or [],
+            task_plan=task_plan,
+            process_state=process_state,
+            evidence_coverage=evidence_coverage,
+            draft_contexts=draft_contexts or [],
+            compiled_context=compiled_context,
+            supplementary_context=supplementary_context,
+        )
+        payload: dict[str, object] = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a W3C Process assistant constrained by source-grounded evidence. "
+                        "Follow the user's prompt rules exactly and do not reveal hidden reasoning."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.1,
+            "max_tokens": 600,
+            "stream": True,
+        }
+        with httpx.stream(
+            "POST",
+            f"{self.base_url}/chat/completions",
+            headers=self._headers(),
+            json=payload,
+            timeout=self.timeout_seconds,
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data or data == "[DONE]":
+                    if data == "[DONE]":
+                        break
+                    continue
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                choices = obj.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    continue
+                delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
+                if not isinstance(delta, dict):
+                    continue
+                content = delta.get("content")
+                if isinstance(content, str) and content:
+                    yield content
 
     def _chat(
         self,

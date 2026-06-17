@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TypedDict
 
@@ -6,7 +7,7 @@ from app.models.schemas import ChatRequest, ChatResponse, ClassifyResponse, Cita
 from app.rag.retriever import Retriever
 from app.services.answering import build_grounded_answer, build_next_step_details, build_refusal
 from app.services.compiled_context import CompiledContextStore
-from app.services.context import build_contextual_query, build_entity_augmented_query
+from app.services.context import FOLLOW_UP_MARKERS, build_contextual_query, build_entity_augmented_query
 from app.services.evidence import check_evidence_coverage
 from app.services.github_context import GitHubDraftContextClient, build_draft_context_augmented_query
 from app.services.llm_router import LLMRouter
@@ -86,10 +87,22 @@ class ChatWorkflow:
         classification = self.classify(request)
         router_decision: LLMRouterDecision | None = None
 
-        # Layer 2: re-classify using the context-enriched query for follow-up questions
+        # Layer 2: re-classify using the context-enriched query for follow-up questions.
+        # IMPORTANT: a follow-up marker alone (e.g. "how about X") does not justify
+        # inheriting scope from history — that lets unrelated topics ride along
+        # because PROCESS_TOPICS keywords in prior turns leak into contextual_query.
+        # Only flip to in_scope when the contextual query produces a STRONG match
+        # AND the original message is either purely referential (no new noun) or
+        # itself contains at least one weak topic word.
         if not classification.in_scope and used_contextual_query:
             contextual_decision = classify_scope(contextual_query)
-            if contextual_decision.in_scope:
+            message_decision = classify_scope(request.message)
+            is_pure_reference = _is_pure_reference(request.message)
+            if (
+                contextual_decision.in_scope
+                and contextual_decision.confidence >= 0.9
+                and (is_pure_reference or message_decision.in_scope)
+            ):
                 classification = ClassifyResponse(
                     in_scope=True,
                     reason="Follow-up question resolved against recent W3C Process conversation context.",
@@ -110,13 +123,32 @@ class ChatWorkflow:
 
         # Layer 3a: LLM router rescues questions that keyword matching missed
         # Layer 3b: LLM router also validates weak keyword matches (confidence < 0.7) to filter false positives
+        # Optimization: when router needs to run AND classification is already weakly in-scope,
+        # speculatively prefetch W3C API entities in parallel — router hints only annotate
+        # the query for retrieval, they don't affect entity matching.
         _needs_router = not classification.in_scope or classification.confidence < 0.7
+        prefetched_entities: list[W3CEntity] | None = None
+        prefetch_error: str | None = None
         if _needs_router:
-            router_decision = self.llm_router.route(
-                contextual_query,
-                request.history,
-                model=router_model,
-            )
+            should_prefetch = classification.in_scope
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                router_future = executor.submit(
+                    self.llm_router.route,
+                    contextual_query,
+                    request.history,
+                    router_model,
+                )
+                entities_future = (
+                    executor.submit(self.w3c_api_client.resolve_entities, contextual_query)
+                    if should_prefetch
+                    else None
+                )
+                router_decision = router_future.result()
+                if entities_future is not None:
+                    try:
+                        prefetched_entities = entities_future.result()
+                    except Exception as exc:  # pragma: no cover - external service fallback
+                        prefetch_error = type(exc).__name__
             if router_decision.attempted:
                 if router_decision.likely_in_scope and router_decision.confidence >= self.settings.llm_router_min_confidence:
                     classification = ClassifyResponse(
@@ -225,9 +257,11 @@ class ChatWorkflow:
         )
 
         resolved_entities: list[W3CEntity] = []
-        try:
-            resolved_entities = self.w3c_api_client.resolve_entities(routed_query)
+        if prefetched_entities is not None:
+            # Reuse parallel prefetch result (router_decision lane); avoid duplicate network call.
+            resolved_entities = prefetched_entities
             audit["resolved_entities"] = [entity.model_dump(mode="json") for entity in resolved_entities]
+            audit["w3c_api_prefetched"] = True
             trace.append(
                 WorkflowStep(
                     id="w3c_api_resolver",
@@ -236,8 +270,8 @@ class ChatWorkflow:
                     detail=_entity_resolution_detail(resolved_entities),
                 )
             )
-        except Exception as exc:  # pragma: no cover - external service fallback
-            audit["w3c_api_error"] = type(exc).__name__
+        elif prefetch_error is not None:
+            audit["w3c_api_error"] = prefetch_error
             trace.append(
                 WorkflowStep(
                     id="w3c_api_resolver",
@@ -246,56 +280,89 @@ class ChatWorkflow:
                     detail="W3C API entity lookup failed; continuing with Process and Guidebook corpus retrieval.",
                 )
             )
+        else:
+            try:
+                resolved_entities = self.w3c_api_client.resolve_entities(routed_query)
+                audit["resolved_entities"] = [entity.model_dump(mode="json") for entity in resolved_entities]
+                trace.append(
+                    WorkflowStep(
+                        id="w3c_api_resolver",
+                        label="W3C API entity resolver",
+                        status="completed",
+                        detail=_entity_resolution_detail(resolved_entities),
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - external service fallback
+                audit["w3c_api_error"] = type(exc).__name__
+                trace.append(
+                    WorkflowStep(
+                        id="w3c_api_resolver",
+                        label="W3C API entity resolver",
+                        status="failed",
+                        detail="W3C API entity lookup failed; continuing with Process and Guidebook corpus retrieval.",
+                    )
+                )
 
         draft_contexts: list[DraftContext] = []
         compiled_context: CompiledContext | None = None
-        try:
-            draft_contexts = self.github_context_client.resolve_contexts(routed_query, resolved_entities, task_plan)
-            audit["draft_contexts"] = [context.model_dump(mode="json") for context in draft_contexts]
-            trace.append(
-                WorkflowStep(
-                    id="draft_context_resolver",
-                    label="GitHub draft context resolver",
-                    status="completed" if draft_contexts else "skipped",
-                    detail=_draft_context_detail(draft_contexts),
-                )
+        # Parallelize: GitHub draft (network) + compiled context (filesystem) are independent.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            draft_future = executor.submit(
+                self.github_context_client.resolve_contexts,
+                routed_query,
+                resolved_entities,
+                task_plan,
             )
-        except Exception as exc:  # pragma: no cover - external service fallback
-            audit["draft_context_error"] = type(exc).__name__
-            trace.append(
-                WorkflowStep(
-                    id="draft_context_resolver",
-                    label="GitHub draft context resolver",
-                    status="failed",
-                    detail=(
-                        "GitHub draft context lookup failed; continuing with Process and Guidebook corpus retrieval. "
-                        "Draft repository data is never treated as normative Process authority."
-                    ),
-                )
+            compiled_future = executor.submit(
+                self.compiled_context_store.resolve,
+                resolved_entities,
             )
-
-        try:
-            compiled_context = self.compiled_context_store.resolve(resolved_entities)
-            if compiled_context:
-                audit["compiled_context"] = compiled_context.model_dump(mode="json")
-            trace.append(
-                WorkflowStep(
-                    id="compiled_context_resolver",
-                    label="Compiled knowledge resolver",
-                    status="completed" if compiled_context else "skipped",
-                    detail=_compiled_context_detail(compiled_context),
+            try:
+                draft_contexts = draft_future.result()
+                audit["draft_contexts"] = [context.model_dump(mode="json") for context in draft_contexts]
+                trace.append(
+                    WorkflowStep(
+                        id="draft_context_resolver",
+                        label="GitHub draft context resolver",
+                        status="completed" if draft_contexts else "skipped",
+                        detail=_draft_context_detail(draft_contexts),
+                    )
                 )
-            )
-        except Exception as exc:  # pragma: no cover - local filesystem fallback
-            audit["compiled_context_error"] = type(exc).__name__
-            trace.append(
-                WorkflowStep(
-                    id="compiled_context_resolver",
-                    label="Compiled knowledge resolver",
-                    status="failed",
-                    detail="Compiled spec context lookup failed; continuing with raw Process and Guidebook retrieval.",
+            except Exception as exc:  # pragma: no cover - external service fallback
+                audit["draft_context_error"] = type(exc).__name__
+                trace.append(
+                    WorkflowStep(
+                        id="draft_context_resolver",
+                        label="GitHub draft context resolver",
+                        status="failed",
+                        detail=(
+                            "GitHub draft context lookup failed; continuing with Process and Guidebook corpus retrieval. "
+                            "Draft repository data is never treated as normative Process authority."
+                        ),
+                    )
                 )
-            )
+            try:
+                compiled_context = compiled_future.result()
+                if compiled_context:
+                    audit["compiled_context"] = compiled_context.model_dump(mode="json")
+                trace.append(
+                    WorkflowStep(
+                        id="compiled_context_resolver",
+                        label="Compiled knowledge resolver",
+                        status="completed" if compiled_context else "skipped",
+                        detail=_compiled_context_detail(compiled_context),
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - local filesystem fallback
+                audit["compiled_context_error"] = type(exc).__name__
+                trace.append(
+                    WorkflowStep(
+                        id="compiled_context_resolver",
+                        label="Compiled knowledge resolver",
+                        status="failed",
+                        detail="Compiled spec context lookup failed; continuing with raw Process and Guidebook retrieval.",
+                    )
+                )
 
         planned_query = build_planned_retrieval_query(routed_query, task_plan)
         retrieval_query = build_entity_augmented_query(planned_query, resolved_entities)
@@ -546,6 +613,46 @@ class ChatWorkflow:
             workflow_trace=trace,
             audit=audit,
         )
+
+
+_ENGLISH_STOPWORDS = frozenset({
+    "the", "a", "an", "of", "for", "to", "in", "on", "is", "are", "was", "were",
+    "do", "does", "did", "can", "could", "will", "would", "should", "may", "might",
+    "and", "or", "but", "not", "tell", "me", "us", "you", "i", "we", "they",
+    "what", "why", "how", "when", "where", "who", "now", "again", "more", "also",
+    "any", "all", "some", "please", "ok", "okay",
+})
+_CJK_FUNCTION_CHARS = frozenset("的是吗呢了过被把就也都还又咋么么了着")
+
+
+def _is_pure_reference(message: str) -> bool:
+    """True when message has no new content beyond referential/function words.
+
+    Used to allow follow-ups like "then?", "继续", "那下一步呢？" to inherit scope,
+    while blocking "how about Beijing" (which carries the new noun "Beijing").
+    """
+    import re as _re
+
+    text = message.strip().lower()
+    if not text:
+        return True
+    # Strip known follow-up markers (these signal continuation, not new content).
+    cleaned = text
+    for marker in sorted(FOLLOW_UP_MARKERS, key=len, reverse=True):
+        cleaned = cleaned.replace(marker.lower(), " ")
+    # Remove punctuation, keep alphanum and CJK ranges.
+    cleaned = _re.sub(r"[^a-z0-9一-鿿\s]+", " ", cleaned).strip()
+    if not cleaned:
+        return True
+    tokens = _re.findall(r"[a-z0-9]+|[一-鿿]+", cleaned)
+    for token in tokens:
+        if _re.fullmatch(r"[a-z0-9]+", token):
+            if token not in _ENGLISH_STOPWORDS:
+                return False
+        else:
+            if not all(ch in _CJK_FUNCTION_CHARS for ch in token):
+                return False
+    return True
 
 
 def _model_generation_detail(model_generation: str, model: str) -> str:

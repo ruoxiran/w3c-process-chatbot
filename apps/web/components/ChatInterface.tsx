@@ -15,7 +15,6 @@ import {
   type ChatTurn,
   type FeedbackRating,
   type ModelInfo,
-  type NextStep,
   type W3CEntity
 } from "@/lib/api";
 
@@ -867,27 +866,6 @@ function ResponseDetails({ response }: { response: ChatResponse }) {
         {response.in_scope ? "In scope: W3C Process workflow question" : "Out of scope"}
       </div>
       {response.process_state ? <ProcessStateSummary response={response} /> : null}
-      {response.next_step_details.length || response.next_steps.length ? (
-        <section className="inline-next-steps" aria-label="Next steps">
-          <h2>Next steps</h2>
-          <ol className="checklist">
-            {getNextStepItems(response).map((step) => (
-              <li key={step.text}>
-                <span>{step.text}</span>
-                {step.source_url ? (
-                  <a
-                    className={`step-source source-${step.source_type ?? "repo"}`}
-                    href={step.source_url}
-                    title={step.source_heading ?? step.source_title ?? undefined}
-                  >
-                    {step.source_type === "guide" ? "Guidebook" : "Process"}
-                  </a>
-                ) : null}
-              </li>
-            ))}
-          </ol>
-        </section>
-      ) : null}
       {response.refusal_reason ? <p className="muted">{response.refusal_reason}</p> : null}
     </div>
   );
@@ -937,12 +915,6 @@ function ProcessStateSummary({ response }: { response: ChatResponse }) {
 
 function formatStateValue(value: string) {
   return value.replaceAll("_", " ");
-}
-
-function getNextStepItems(response: ChatResponse): NextStep[] {
-  return response.next_step_details.length
-    ? response.next_step_details
-    : response.next_steps.map((step) => ({ text: step }));
 }
 
 function toChatHistory(messages: ConversationMessage[]): ChatTurn[] {
