@@ -142,6 +142,22 @@ export type ChatTurn = {
   content: string;
 };
 
+/**
+ * Per-request LLM provider override.
+ *
+ * The user supplies this in the Settings modal; the values live only in this
+ * browser's localStorage. They are sent with each chat request and forwarded
+ * to the user's chosen provider. The server does NOT persist them — they are
+ * absent from the audit blob, the feedback log, and all other server-side
+ * storage.
+ */
+export type ProviderOverride = {
+  kind: "openai-compatible" | "ollama";
+  base_url: string;
+  api_key?: string;
+  model: string;
+};
+
 export type NextStep = {
   text: string;
   source_title?: string | null;
@@ -234,14 +250,24 @@ export async function listModels(): Promise<ModelsResponse> {
 export async function sendChat(
   message: string,
   model?: string,
-  history: ChatTurn[] = []
+  history: ChatTurn[] = [],
+  providerOverride?: ProviderOverride
 ): Promise<ChatResponse> {
+  const body: Record<string, unknown> = {
+    message,
+    locale: "en",
+    model,
+    history: history.slice(-8),
+  };
+  if (providerOverride) {
+    body.provider_override = providerOverride;
+  }
   const response = await fetchWithTimeout(
     `${API_BASE_URL}/chat`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, locale: "en", model, history: history.slice(-8) }),
+      body: JSON.stringify(body),
     },
     CHAT_TIMEOUT_MS
   );

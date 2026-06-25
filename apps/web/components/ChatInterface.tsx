@@ -2,6 +2,13 @@
 
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useState } from "react";
 import { CitationPanel } from "@/components/CitationPanel";
+import {
+  ModelSettings,
+  configToOverride,
+  describeConfig,
+  loadSavedConfig,
+  type SavedConfig,
+} from "@/components/ModelSettings";
 import { WorkflowPanel } from "@/components/WorkflowPanel";
 import {
   listModels,
@@ -47,6 +54,16 @@ export function ChatInterface() {
   const [evalRun, setEvalRun] = useState<EvalRunResponse | null>(null);
   const [isEvalLoading, setIsEvalLoading] = useState(false);
   const [evalError, setEvalError] = useState<string | null>(null);
+  // Provider override (user's own LLM endpoint + key, stored in localStorage
+  // only). ``null`` while we hydrate from storage; ``{kind: "default"}`` once
+  // we've checked. This avoids sending an override on the very first server
+  // render in case localStorage had stale data.
+  const [providerConfig, setProviderConfig] = useState<SavedConfig | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  useEffect(() => {
+    setProviderConfig(loadSavedConfig());
+  }, []);
 
   const latestResponse = useMemo(
     () => [...messages].reverse().find((item) => item.response)?.response ?? null,
@@ -109,7 +126,8 @@ export function ChatInterface() {
     setInspectorTab("workflow");
 
     try {
-      const result = await sendChat(trimmed, selectedModel, history);
+      const override = providerConfig ? configToOverride(providerConfig) : undefined;
+      const result = await sendChat(trimmed, selectedModel, history, override);
       setSelectedResponse(result);
       setMessages((current) =>
         current.map((item) =>
@@ -189,27 +207,50 @@ export function ChatInterface() {
             <h1 id="page-title">W3C Process Assistant</h1>
           </div>
           <div className="topbar-actions">
-            <label htmlFor="model">Model</label>
-            <select
-              id="model"
-              value={selectedModel}
-              onChange={(event) => setSelectedModel(event.target.value)}
+            {providerConfig && providerConfig.kind !== "default" ? (
+              <span className="provider-chip" title="Using your own provider">
+                {describeConfig(providerConfig)}
+              </span>
+            ) : (
+              <>
+                <label htmlFor="model">Model</label>
+                <select
+                  id="model"
+                  value={selectedModel}
+                  onChange={(event) => setSelectedModel(event.target.value)}
+                >
+                  {models.length ? (
+                    models.map((model) => (
+                      <option key={model.name} value={model.name}>
+                        {model.name}
+                      </option>
+                    ))
+                  ) : (
+                    <option value={selectedModel}>{selectedModel}</option>
+                  )}
+                </select>
+              </>
+            )}
+            <button
+              className="button-quiet"
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              aria-haspopup="dialog"
             >
-              {models.length ? (
-                models.map((model) => (
-                  <option key={model.name} value={model.name}>
-                    {model.name}
-                  </option>
-                ))
-              ) : (
-                <option value={selectedModel}>{selectedModel}</option>
-              )}
-            </select>
+              Model settings
+            </button>
             <button className="button-secondary" type="button" onClick={clearConversation}>
               New chat
             </button>
           </div>
         </div>
+
+        <ModelSettings
+          open={settingsOpen}
+          current={providerConfig ?? { kind: "default" }}
+          onClose={() => setSettingsOpen(false)}
+          onSave={setProviderConfig}
+        />
 
         <div
           className="conversation"

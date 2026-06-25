@@ -18,6 +18,7 @@ from app.services.openai_compatible import OpenAICompatibleClient
 from app.services.process_state import extract_process_state
 from app.services.live_fetch import fetch_page_excerpt
 from app.services.scope import classify_scope
+from app.services.provider_override import ProviderOverrideError, build_override_client
 from app.services.task_planner import build_planned_retrieval_query, plan_task
 from app.services.w3c_api import W3CAPIClient
 
@@ -186,12 +187,16 @@ class ChatWorkflow:
                 ),
             )
         ]
+        override = request.provider_override
         audit = {
             "workflow": "harness_v1",
             "matched_topics": classification.matched_topics,
             "injection_risk": classification.injection_risk,
-            "llm_provider": self.settings.llm_provider,
-            "llm_model": _selected_model(request, self.settings),
+            # Audit reflects what the workflow WILL run with. For user overrides
+            # we record kind+model only — never base_url and never api_key,
+            # so the audit blob is safe to surface or persist.
+            "llm_provider": f"override:{override.kind}" if override else self.settings.llm_provider,
+            "llm_model": override.model if override else _selected_model(request, self.settings),
             "used_contextual_query": used_contextual_query,
         }
         if router_decision:
@@ -501,7 +506,18 @@ class ChatWorkflow:
             compiled_context=compiled_context,
         )
         next_step_details = build_next_step_details(routed_query, citations, next_steps, compiled_context=compiled_context)
-        selected_model = _selected_model(request, self.settings)
+        # When the user supplies a per-request provider override we use THEIR
+        # endpoint and model id; otherwise we fall back to the server defaults.
+        # The api_key never leaves this function — it is consumed by the
+        # one-shot client and intentionally never written to ``audit``.
+        if override is not None:
+            selected_model = override.model
+            generation_provider = override.kind
+            audit["model_provider_source"] = "override"
+        else:
+            selected_model = _selected_model(request, self.settings)
+            generation_provider = self.settings.llm_provider
+            audit["model_provider_source"] = "default"
         model_generation = "template"
 
         # When injection language is detected we throw away the conversation
@@ -510,9 +526,29 @@ class ChatWorkflow:
         # makes the safety_note actually safe.
         safe_history = [] if classification.injection_risk else request.history
 
-        if self.settings.llm_provider == "ollama":
+        # Resolve which client handles this request. Override clients are
+        # built per-request and never cached.
+        generation_client = None
+        if override is not None:
             try:
-                generation = self.ollama_client.generate_answer(
+                generation_client = build_override_client(override, self.settings)
+            except ProviderOverrideError as exc:
+                model_generation = "override_rejected"
+                audit["model_generation"] = model_generation
+                audit["model_error"] = "ProviderOverrideError"
+                audit["model_error_detail"] = str(exc)
+                logger.info("Provider override rejected: %s", exc)
+        elif generation_provider == "ollama":
+            generation_client = self.ollama_client
+        elif generation_provider in {"openai", "openai-compatible", "openrouter"}:
+            generation_client = self.openai_compatible_client
+
+        # Audit/log names use underscore form for backwards compatibility
+        # with existing tests, logs, and eval cases.
+        provider_label = generation_provider.replace("-", "_")
+        if generation_client is not None:
+            try:
+                generation = generation_client.generate_answer(
                     model=selected_model,
                     question=request.message,
                     locale=request.locale,
@@ -530,48 +566,25 @@ class ChatWorkflow:
                 )
                 if generation.text:
                     answer = generation.text
-                    model_generation = "ollama"
+                    model_generation = provider_label
                     audit["model_generation"] = model_generation
                 else:
-                    model_generation = "ollama_empty_fallback"
+                    model_generation = f"{provider_label}_empty_fallback"
                     audit["model_generation"] = model_generation
             except Exception as exc:  # pragma: no cover - external service fallback
                 model_generation = "template_fallback"
                 audit["model_generation"] = model_generation
                 audit["model_error"] = type(exc).__name__
-                logger.warning("Ollama answer generation failed; using template fallback", exc_info=exc)
-        elif self.settings.llm_provider in {"openai", "openai-compatible", "openrouter"}:
-            try:
-                generation = self.openai_compatible_client.generate_answer(
-                    model=selected_model,
-                    question=request.message,
-                    locale=request.locale,
-                    citations=citations,
-                    fallback_answer=answer,
-                    fallback_next_steps=next_steps,
-                    history=safe_history,
-                    entities=resolved_entities,
-                    task_plan=task_plan,
-                    process_state=process_state,
-                    evidence_coverage=evidence_coverage,
-                    draft_contexts=draft_contexts,
-                    compiled_context=compiled_context,
-                    supplementary_context=supplementary_context,
+                logger.warning(
+                    "Answer generation via %s failed; using template fallback",
+                    provider_label,
+                    exc_info=exc,
                 )
-                if generation.text:
-                    answer = generation.text
-                    model_generation = "openai_compatible"
-                    audit["model_generation"] = model_generation
-                else:
-                    model_generation = "openai_compatible_empty_fallback"
-                    audit["model_generation"] = model_generation
-            except Exception as exc:  # pragma: no cover - external service fallback
-                model_generation = "template_fallback"
-                audit["model_generation"] = model_generation
-                audit["model_error"] = type(exc).__name__
-                logger.warning("OpenAI-compatible answer generation failed; using template fallback", exc_info=exc)
         else:
             audit["model_generation"] = model_generation
+        # Defensive: explicitly drop the secret before this scope ends so any
+        # future debugger / serializer can't reach it from the local frame.
+        generation_client = None
 
         trace.append(
             WorkflowStep(

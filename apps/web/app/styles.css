@@ -1208,3 +1208,153 @@ button:disabled {
     position: static;
   }
 }
+
+/* Provider chip in the topbar — shown when the user has set their own provider. */
+.provider-chip {
+  background: var(--w3c-blue-light);
+  border: 1px solid var(--w3c-border);
+  border-radius: var(--w3c-radius);
+  color: var(--w3c-blue-dark);
+  font-size: 0.86rem;
+  font-weight: 700;
+  padding: 0.2rem 0.55rem;
+  white-space: nowrap;
+}
+
+/* Visually-hidden but available to screen readers. */
+.visually-hidden {
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  width: 1px;
+}
+
+/* Model settings modal. */
+.settings-overlay {
+  align-items: center;
+  background: rgba(31, 31, 31, 0.52);
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  left: 0;
+  padding: var(--w3c-space-4);
+  position: fixed;
+  right: 0;
+  top: 0;
+  z-index: 100;
+}
+
+.settings-modal {
+  background: var(--w3c-background);
+  border: 1px solid var(--w3c-border-soft);
+  border-radius: var(--w3c-radius);
+  display: grid;
+  gap: var(--w3c-space-4);
+  max-height: min(90vh, 720px);
+  max-width: 36rem;
+  overflow-y: auto;
+  padding: var(--w3c-space-6);
+  width: 100%;
+}
+
+.settings-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.settings-header h2 {
+  margin: 0;
+}
+
+.settings-privacy {
+  background: var(--w3c-panel);
+  border-left: 3px solid var(--w3c-blue);
+  color: var(--w3c-text-soft);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  margin: 0;
+  padding: var(--w3c-space-3) var(--w3c-space-4);
+}
+
+.settings-choice-group {
+  border: 0;
+  display: grid;
+  gap: var(--w3c-space-2);
+  margin: 0;
+  padding: 0;
+}
+
+.settings-choice {
+  align-items: flex-start;
+  border: 1px solid var(--w3c-border-soft);
+  border-radius: var(--w3c-radius);
+  cursor: pointer;
+  display: flex;
+  gap: var(--w3c-space-3);
+  padding: var(--w3c-space-3);
+}
+
+.settings-choice.active {
+  background: var(--w3c-blue-light);
+  border-color: var(--w3c-blue);
+}
+
+.settings-choice input[type="radio"] {
+  margin-top: 0.25rem;
+}
+
+.settings-choice span {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.settings-choice small {
+  color: var(--w3c-muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.settings-fields {
+  display: grid;
+  gap: var(--w3c-space-3);
+}
+
+.settings-fields label {
+  display: grid;
+  font-size: 0.92rem;
+  font-weight: 700;
+  gap: 0.3rem;
+}
+
+.settings-fields input {
+  border: 1px solid var(--w3c-border);
+  border-radius: var(--w3c-radius);
+  font: inherit;
+  font-weight: 400;
+  padding: 0.5rem 0.7rem;
+}
+
+.settings-fields input:focus-visible {
+  border-color: var(--w3c-blue);
+}
+
+.settings-error {
+  background: #fff0f3;
+  border: 1px solid var(--w3c-danger);
+  border-radius: var(--w3c-radius);
+  color: var(--w3c-danger);
+  font-size: 0.92rem;
+  margin: 0;
+  padding: var(--w3c-space-2) var(--w3c-space-3);
+}
+
+.settings-actions {
+  display: flex;
+  gap: var(--w3c-space-2);
+  justify-content: flex-end;
+}

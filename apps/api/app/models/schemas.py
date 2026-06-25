@@ -1,7 +1,7 @@
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, SecretStr
 
 
 class SourceType(str, Enum):
@@ -158,6 +158,22 @@ class ChatTurn(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
 
 
+class ProviderOverride(BaseModel):
+    """User-supplied LLM provider used for THIS request only.
+
+    The api_key is held as a Pydantic SecretStr so it does not leak into
+    log lines, repr, or model_dump() output by default. The workflow uses
+    it once to build a per-request client and then it is discarded — it is
+    never written to the audit dict, the feedback log, or the workflow
+    cache.
+    """
+
+    kind: Literal["openai-compatible", "ollama"]
+    base_url: HttpUrl
+    api_key: SecretStr | None = None
+    model: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,118}$")
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
     locale: str = Field(default="auto", pattern=r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?$|^auto$", max_length=16)
@@ -165,6 +181,7 @@ class ChatRequest(BaseModel):
     user_role: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,40}$")
     model: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,80}$")
     history: list[ChatTurn] = Field(default_factory=list, max_length=12)
+    provider_override: ProviderOverride | None = None
 
 
 class ChatResponse(BaseModel):
