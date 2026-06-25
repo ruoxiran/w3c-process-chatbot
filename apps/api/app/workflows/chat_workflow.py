@@ -748,8 +748,12 @@ def _router_augmented_query(query: str, decision: LLMRouterDecision | None) -> s
     if decision.search_hints:
         lines.append("search_hints:")
         lines.extend(f"- {hint}" for hint in decision.search_hints)
-    if decision.risk_flags:
-        lines.append(f"risk_flags={', '.join(decision.risk_flags)}")
+    # ``risk_flags`` is intentionally NOT appended to the retrieval query.
+    # The router emits them as categorical labels (e.g. "Horizontal Review",
+    # "Transition"), and the retriever's downstream substring matchers
+    # (``_is_horizontal_review_query``, topic-coverage injection) would then
+    # treat the flag value as if the user had asked about that topic. The
+    # flags are still captured in the audit trace for inspection.
     return "\n".join(lines)
 
 
