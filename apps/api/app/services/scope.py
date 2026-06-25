@@ -18,6 +18,7 @@ STRONG_TOPIC_KEYWORDS = frozenset([
     "ac review", "transition", "转换",
     "working group", "interest group", "community group", "工作组",
     "working draft", "specification", "标准",
+    "workshop", "workshops", "tpac", "研讨会",
 ])
 
 PROCESS_TOPICS = {
@@ -66,6 +67,7 @@ PROCESS_TOPICS = {
     "policy": ["patent", "ipr", "pubrules", "code of conduct", "专利", "发布规则"],
     "guidebook": ["guidebook", "guide", "art of consensus", "指南"],
     "w3c": ["w3c", "万维网联盟"],
+    "events": ["workshop", "workshops", "tpac", "ac meeting", "advisory committee meeting", "breakout", "研讨会"],
 }
 
 INJECTION_PATTERNS = [
