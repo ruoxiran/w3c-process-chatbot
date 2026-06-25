@@ -3,6 +3,28 @@ from __future__ import annotations
 from app.models.schemas import Citation, CompiledContext, EvidenceCoverage, ProcessState, SourceType, TaskPlan, W3CEntity
 
 
+_COMPOUND_LANDMARKS = (
+    "fpwd", "first public", "working draft", "candidate recommendation", "cr",
+    "snapshot", "draft note", "proposed recommendation", "rec", "recommendation",
+    "charter", "recharter", "horizontal review", "wide review", "ac review",
+    "formal objection", "appeal", "patent", "exclusion", "transition", "transitioning",
+)
+
+
+def _is_compound_question(query: str | None) -> bool:
+    """Heuristic: the question touches three or more distinct Process landmarks.
+
+    Two landmarks (e.g. "CR to REC") describe a single transition and a single
+    Process citation can still cover it. The bar is three so we only fire on
+    genuinely multi-topic questions (e.g. "transition + horizontal review + patent").
+    """
+    if not query:
+        return False
+    text = query.lower()
+    hits = {landmark for landmark in _COMPOUND_LANDMARKS if landmark in text}
+    return len(hits) >= 3
+
+
 def check_evidence_coverage(
     *,
     plan: TaskPlan,
@@ -10,9 +32,11 @@ def check_evidence_coverage(
     entities: list[W3CEntity],
     process_state: ProcessState | None = None,
     compiled_context: CompiledContext | None = None,
+    query: str | None = None,
 ) -> EvidenceCoverage:
     has_compiled_context = compiled_context is not None
-    has_process = any(citation.source_type == SourceType.process for citation in citations)
+    process_citations = sum(1 for c in citations if c.source_type == SourceType.process)
+    has_process = process_citations > 0
     has_guide = any(citation.source_type == SourceType.guide for citation in citations)
     has_entity_status = bool(entities)
     missing: list[str] = []
@@ -40,6 +64,8 @@ def check_evidence_coverage(
         citations, ["staff contact", "team contact", "teamcontact"]
     ):
         missing.append("Staff Contact or Team Contact evidence")
+    if _is_compound_question(query) and process_citations < 2:
+        missing.append("a second Process citation covering the other stage or rule the question touches")
 
     targeted_queries = _targeted_queries(plan, missing)
     if not citations:
@@ -104,6 +130,8 @@ def _targeted_queries(plan: TaskPlan, missing: list[str]) -> list[str]:
             queries.append(f"{subject} wide review horizontal review W3C Process Guidebook")
         if "staff contact" in lower or "team contact" in lower:
             queries.append("Staff Contact Team Contact responsibilities W3C Process Guidebook")
+        if "second process citation" in lower:
+            queries.append(f"{subject} W3C Process detailed transition requirements full criteria")
     if not queries:
         queries.extend(plan.search_queries[1:3])
     return _dedupe(queries)[:4]

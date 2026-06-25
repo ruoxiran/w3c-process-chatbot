@@ -18,7 +18,7 @@ _BM25_K1 = 1.45
 _BM25_B = 0.72
 
 # Rerank score weights
-_SEMANTIC_WEIGHT = 18
+_SEMANTIC_WEIGHT = 20
 _SOURCE_PRIORITY_PROCESS = 4
 _SOURCE_PRIORITY_GUIDE = 2
 _HEADING_OVERLAP_PER_TOKEN = 2
@@ -443,6 +443,18 @@ def _topic_bonus(query: str, title: str, heading: str, body: str) -> int:
             score += 14
     if ("formal objection" in text or "异议" in text) and "formal objection" in combined:
         score += 6
+    if ("appeal" in text or "申诉" in text) and ("appeal" in heading or "appeal" in title):
+        score += 8
+    if ("recharter" in text or "rechartering" in text) and ("charter" in heading or "rechartering" in combined):
+        score += 10
+    if (
+        "fpwd" in text or "first public working draft" in text
+    ) and ("first public working draft" in combined or "fpwd" in combined):
+        score += 10
+    if ("ac review" in text or "advisory committee" in text) and (
+        "advisory committee" in heading or "ac review" in combined
+    ):
+        score += 10
     if ("next step" in text or "下一步" in text) and "next step finder" in combined:
         score += 8
     return score

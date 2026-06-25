@@ -390,6 +390,7 @@ class ChatWorkflow:
             entities=resolved_entities,
             process_state=process_state,
             compiled_context=compiled_context,
+            query=routed_query,
         )
         trace.append(
             WorkflowStep(
