@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, KeyboardEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import { CitationPanel } from "@/components/CitationPanel";
 import {
   ModelSettings,
@@ -1013,20 +1013,52 @@ function AnswerContent({ text }: { text: string }) {
     <div className="answer-body">
       {blocks.map((block, index) => {
         if (block.type === "paragraph") {
-          return <p key={`${block.type}-${index}`}>{block.text}</p>;
+          return (
+            <p key={`${block.type}-${index}`}>{renderInline(block.text)}</p>
+          );
         }
 
         const ListTag = block.type === "ordered" ? "ol" : "ul";
         return (
           <ListTag key={`${block.type}-${index}`}>
-            {block.items.map((item) => (
-              <li key={item}>{item}</li>
+            {block.items.map((item, itemIndex) => (
+              <li key={`${itemIndex}-${item.slice(0, 32)}`}>{renderInline(item)}</li>
             ))}
           </ListTag>
         );
       })}
     </div>
   );
+}
+
+/**
+ * Render the limited inline markdown we tolerate inside a paragraph or list
+ * item: ``**bold**`` and ``` `code` ```. Everything else stays as text. We
+ * deliberately do NOT support links or images here — citation URLs are
+ * surfaced through the dedicated Sources tab, and avoiding raw HTML keeps
+ * the XSS surface zero.
+ */
+function renderInline(text: string): ReactNode {
+  const parts: ReactNode[] = [];
+  const pattern = /\*\*(.+?)\*\*|`([^`]+)`/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    if (match[1] !== undefined) {
+      parts.push(<strong key={`b-${key++}`}>{match[1]}</strong>);
+    } else if (match[2] !== undefined) {
+      parts.push(<code key={`c-${key++}`}>{match[2]}</code>);
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+  return parts.length ? parts : text;
 }
 
 function parseAnswerBlocks(text: string): AnswerBlock[] {
@@ -1050,7 +1082,11 @@ function parseAnswerBlocks(text: string): AnswerBlock[] {
     const line = rawLine.trim();
     if (!line) {
       flushParagraph();
-      flushList();
+      // A blank line on its own does NOT close an in-progress list. Many
+      // models (including Kimi) emit blank lines between list items, and
+      // treating that as a list boundary makes each item render as its own
+      // single-item <ol>, which the browser dutifully numbers "1." every
+      // time. Only a non-list, non-empty line (handled below) closes the list.
       continue;
     }
 
