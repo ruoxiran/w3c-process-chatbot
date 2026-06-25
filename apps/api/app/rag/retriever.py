@@ -465,6 +465,14 @@ def _topic_bonus(query: str, title: str, heading: str, body: str) -> int:
             score += 18
         if "organize a technical report transition" in title and "horizontal" in body:
             score += 14
+    if ("workshop" in text or "workshops" in text or "研讨会" in text) and (
+        "workshop" in heading or "workshop" in title or "workshops.html" in body
+    ):
+        # Boost dedicated workshop pages so queries like "how do I prepare a
+        # workshop" surface the workshops Guidebook chapter ahead of generic
+        # meeting / hosting pages that share the parent ``/guide/meetings/``
+        # path.
+        score += 18
     if ("formal objection" in text or "异议" in text) and "formal objection" in combined:
         score += 6
     if ("appeal" in text or "申诉" in text) and ("appeal" in heading or "appeal" in title):
@@ -696,6 +704,29 @@ def _ensure_topic_entrypoint_citations(query: str, citations: list[Citation], li
                     url="https://www.w3.org/guide/process/charter-extensions.html",
                     source_type=SourceType.guide,
                     heading_path="Charter extensions",
+                ),
+            ]
+        )
+    if any(needle in text for needle in ["workshop", "workshops", "研讨会"]):
+        required.extend(
+            [
+                Citation(
+                    title="Workshops",
+                    url="https://www.w3.org/guide/meetings/workshops.html#purpose",
+                    source_type=SourceType.guide,
+                    heading_path="Workshops > Purpose",
+                ),
+                Citation(
+                    title="Proposing a Workshop",
+                    url="https://www.w3.org/guide/meetings/workshops.html#Proposing",
+                    source_type=SourceType.guide,
+                    heading_path="Workshops > Proposing a Workshop",
+                ),
+                Citation(
+                    title="Planning a Workshop",
+                    url="https://www.w3.org/guide/meetings/workshops.html#Planning",
+                    source_type=SourceType.guide,
+                    heading_path="Workshops > Planning a Workshop",
                 ),
             ]
         )
