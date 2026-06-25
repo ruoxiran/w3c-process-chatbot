@@ -106,18 +106,29 @@ class Retriever:
         self._dense_cache_lock = threading.Lock()
         self._query_embedding_lock = threading.Lock()
 
-    def retrieve(self, query: str) -> list[Citation]:
-        corpus_hits = self._retrieve_from_corpus(query)
+    def retrieve(self, query: str, *, user_message: str | None = None) -> list[Citation]:
+        """Retrieve citations for ``query``.
+
+        ``user_message`` is the raw user question, separate from ``query``
+        which may have been augmented with task-planner / entity / router
+        metadata. Using the augmented query for BM25/TF-IDF widens recall;
+        using ``user_message`` for the topic-relevance and quality signals
+        keeps ranking aligned with what the user actually asked, rather
+        than being biased by 10 lines of workflow metadata. When
+        ``user_message`` is omitted, we fall back to the augmented query
+        for backwards compatibility with callers and tests.
+        """
+        corpus_hits = self._retrieve_from_corpus(query, user_message=user_message or query)
         if corpus_hits:
             return corpus_hits
 
-        text = query.lower()
+        text = (user_message or query).lower()
         citations = [DEFAULT_PROCESS_CITATION]
         if "guide" in text or "指南" in text or "practice" in text or "怎么" in text:
             citations.append(DEFAULT_GUIDE_CITATION)
         return citations
 
-    def _retrieve_from_corpus(self, query: str, limit: int = 10) -> list[Citation]:
+    def _retrieve_from_corpus(self, query: str, *, user_message: str, limit: int = 12) -> list[Citation]:
         index = self._load_index()
         if not index.records:
             return []
@@ -145,7 +156,7 @@ class Retriever:
                 else 0.0
             )
             rerank = _rerank_score(
-                query,
+                user_message,
                 record,
                 bm25,
                 semantic,
@@ -156,8 +167,11 @@ class Retriever:
                 candidates.append((rerank, record, {"bm25": bm25, "semantic": semantic, "dense": dense}))
 
         candidates.sort(key=lambda item: item[0], reverse=True)
+        # Prune duplicate snapshot pages when the canonical w3.org Process
+        # page exists in the same candidate set.
+        candidates = _drop_redundant_snapshots(candidates)
         selected = _balanced_hits(candidates, limit)
-        selected = _ensure_topic_coverage(query, selected, candidates, limit)
+        selected = _ensure_topic_coverage(user_message, selected, candidates, limit)
         citations: list[Citation] = []
         seen: set[str] = set()
         for _, record, _scores in selected:
@@ -182,7 +196,7 @@ class Retriever:
                     quote=str(chunk.get("text") or "")[:420],
                 )
             )
-        return _ensure_topic_entrypoint_citations(query, citations, limit)
+        return _ensure_topic_entrypoint_citations(user_message, citations, limit)
 
     def _query_embedding(self, query: str) -> list[float] | None:
         with self._query_embedding_lock:
@@ -404,7 +418,99 @@ def _rerank_score(
     quality = _quality_bonus(record.chunk)
     adjustment = _relevance_adjustment(query, record.chunk, record.title, record.heading, record.body)
     heading_overlap = _heading_overlap(query, record.heading)
-    return bm25 + (semantic * _SEMANTIC_WEIGHT) + (dense * dense_weight) + topic + priority + quality + adjustment + heading_overlap
+    specificity = _specificity_bonus(query, record)
+    return (
+        bm25
+        + (semantic * _SEMANTIC_WEIGHT)
+        + (dense * dense_weight)
+        + topic
+        + priority
+        + quality
+        + adjustment
+        + heading_overlap
+        + specificity
+    )
+
+
+# Stop-words excluded from the specificity bonus. They appear in nearly every
+# question and would otherwise reward any chunk that happens to contain them.
+_SPECIFICITY_STOPWORDS = frozenset({
+    "about", "after", "again", "and", "any", "are", "before", "being", "between",
+    "both", "but", "can", "could", "did", "does", "doing", "done", "during",
+    "each", "for", "from", "get", "give", "going", "have", "having", "help",
+    "here", "how", "i", "if", "in", "into", "is", "it", "its", "just", "like",
+    "make", "many", "may", "might", "more", "most", "much", "must", "my", "need",
+    "next", "no", "not", "now", "of", "off", "on", "once", "one", "only", "or",
+    "other", "our", "out", "over", "please", "see", "should", "so", "some",
+    "step", "steps", "such", "tell", "than", "that", "the", "their", "them",
+    "then", "there", "these", "they", "this", "those", "through", "to", "too",
+    "under", "until", "up", "use", "used", "using", "very", "want", "was", "we",
+    "were", "what", "when", "where", "which", "while", "who", "why", "will",
+    "with", "would", "you", "your", "w3c",
+})
+
+
+def _specificity_bonus(user_message: str, record: CorpusRecord) -> int:
+    """Boost chunks whose URL or heading explicitly mentions a content word
+    from the user's question.
+
+    The intent: if the user asked about "workshops", chunks at
+    ``/guide/meetings/workshops.html`` (which contain "workshop" in the URL)
+    should rank above chunks at ``/guide/meetings/hosting.md`` (which don't),
+    independent of BM25 score. Generic process pages without the topical
+    keyword get no boost.
+
+    Only matches content nouns: tokens of length ≥ 4 that are not in the
+    stop-word list. Each unique matching token contributes up to 6 points,
+    capped at +18 so this helper can't dominate the score function.
+    """
+    if not user_message:
+        return 0
+    msg_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9一-鿿]{4,}", user_message.lower())
+        if token not in _SPECIFICITY_STOPWORDS
+    }
+    if not msg_tokens:
+        return 0
+    url = (record.chunk.get("source_url") or "").lower() if isinstance(record.chunk, dict) else ""
+    haystacks = (url, record.heading, record.title)
+    score = 0
+    for token in msg_tokens:
+        for haystack in haystacks:
+            if token in haystack:
+                score += 6
+                break
+        if score >= 18:
+            break
+    return min(score, 18)
+
+
+def _drop_redundant_snapshots(
+    candidates: list[tuple[float, CorpusRecord, dict[str, float]]],
+) -> list[tuple[float, CorpusRecord, dict[str, float]]]:
+    """When both the canonical ``w3.org/policies/process`` page and a GitHub
+    snapshot copy of the same content are in the candidate set, drop the
+    snapshot. Snapshots otherwise crowd the top results with duplicate text
+    that adds noise but no new information.
+    """
+    canonical_fragments: set[str] = set()
+    for _, record, _ in candidates:
+        url = (record.chunk.get("source_url") or "").lower() if isinstance(record.chunk, dict) else ""
+        if "w3.org/policies/process" in url and "#" in url:
+            canonical_fragments.add(url.rsplit("#", 1)[1])
+    if not canonical_fragments:
+        return candidates
+    kept: list[tuple[float, CorpusRecord, dict[str, float]]] = []
+    for entry in candidates:
+        record = entry[1]
+        url = (record.chunk.get("source_url") or "").lower() if isinstance(record.chunk, dict) else ""
+        if ("/snapshots/" in url or "github.com/w3c/process/blob" in url) and any(
+            fragment in url for fragment in canonical_fragments
+        ):
+            continue
+        kept.append(entry)
+    return kept
 
 
 def _heading_overlap(query: str, heading: str) -> int:

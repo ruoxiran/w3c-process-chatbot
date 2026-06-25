@@ -128,9 +128,11 @@ class FakeW3CAPIClient:
 class RecordingRetriever:
     def __init__(self) -> None:
         self.queries: list[str] = []
+        self.user_messages: list[str] = []
 
-    def retrieve(self, query: str) -> list[Citation]:
+    def retrieve(self, query: str, *, user_message: str | None = None) -> list[Citation]:
         self.queries.append(query)
+        self.user_messages.append(user_message or query)
         return [DEFAULT_PROCESS_CITATION]
 
 

@@ -396,7 +396,10 @@ class ChatWorkflow:
                 )
             )
 
-        citations = self.retriever.retrieve(retrieval_query)
+        # Pass the raw user message separately so the retriever can rank by
+        # what the user actually asked instead of being biased by the 10+
+        # lines of task-planner / entity / router metadata in retrieval_query.
+        citations = self.retriever.retrieve(retrieval_query, user_message=request.message)
         process_state = extract_process_state(retrieval_query, citations, resolved_entities)
         evidence_coverage = check_evidence_coverage(
             plan=task_plan,
@@ -423,7 +426,9 @@ class ChatWorkflow:
             attempted_targeted_queries = list(evidence_coverage.targeted_queries)
             targeted_hits: list[Citation] = []
             for targeted_query in attempted_targeted_queries:
-                targeted_hits.extend(self.retriever.retrieve(targeted_query))
+                targeted_hits.extend(
+                    self.retriever.retrieve(targeted_query, user_message=request.message)
+                )
             citations = _merge_citations(citations, targeted_hits)
             process_state = extract_process_state(retrieval_query, citations, resolved_entities)
             evidence_coverage = check_evidence_coverage(
