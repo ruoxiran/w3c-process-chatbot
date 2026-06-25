@@ -6,7 +6,10 @@ html {
   background: var(--w3c-background);
   color: var(--w3c-text);
   font-family: var(--w3c-font-sans);
-  font-size: 100%;
+  /* Base font size at ~14.5px (was 16). Scales every rem-based token —
+     fonts, paddings, gaps — proportionally smaller so the page feels less
+     crowded without browser zoom. */
+  font-size: 90.625%;
 }
 
 body {
@@ -1357,4 +1360,46 @@ button:disabled {
   display: flex;
   gap: var(--w3c-space-2);
   justify-content: flex-end;
+}
+
+/* Inline clickable citation references inside the answer body. */
+.citation-ref {
+  background: var(--w3c-blue-light);
+  border: 1px solid var(--w3c-border);
+  border-radius: var(--w3c-radius);
+  color: var(--w3c-link);
+  font-size: 0.78em;
+  font-weight: 700;
+  margin: 0 0.1em;
+  padding: 0.05em 0.4em;
+  text-decoration: none;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.citation-ref:hover,
+.citation-ref:focus-visible {
+  background: var(--w3c-blue);
+  border-color: var(--w3c-blue);
+  color: var(--w3c-button-text);
+  text-decoration: none;
+}
+
+.message-user .citation-ref {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.36);
+  color: #fff;
+}
+
+.message-user .citation-ref:hover,
+.message-user .citation-ref:focus-visible {
+  background: #fff;
+  border-color: #fff;
+  color: var(--w3c-blue-dark);
+}
+
+.citation-ref-missing {
+  color: var(--w3c-muted);
+  font-size: 0.78em;
+  font-weight: 700;
 }

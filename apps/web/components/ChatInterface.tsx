@@ -16,6 +16,7 @@ import {
   sendChat,
   submitFeedback,
   type ChatResponse,
+  type Citation,
   type CompiledContext,
   type DraftContext,
   type EvalRunResponse,
@@ -783,7 +784,7 @@ function ChatBubble({
     <article className={`chat-message message-${message.role} ${message.status ? `message-${message.status}` : ""}`}>
       <div className="message-meta">{message.role === "user" ? "You" : "W3C Process Assistant"}</div>
       <div className="message-bubble">
-        <AnswerContent text={message.content} />
+        <AnswerContent text={message.content} citations={response?.citations} />
         {response ? (
           <div className="message-actions" aria-label="Answer actions">
             <button className="button-quiet" type="button" onClick={copyAnswer}>
@@ -1006,15 +1007,16 @@ type AnswerBlock =
   | { type: "ordered"; items: string[] }
   | { type: "unordered"; items: string[] };
 
-function AnswerContent({ text }: { text: string }) {
+function AnswerContent({ text, citations }: { text: string; citations?: Citation[] }) {
   const blocks = parseAnswerBlocks(text);
+  const sources = citations ?? [];
 
   return (
     <div className="answer-body">
       {blocks.map((block, index) => {
         if (block.type === "paragraph") {
           return (
-            <p key={`${block.type}-${index}`}>{renderInline(block.text)}</p>
+            <p key={`${block.type}-${index}`}>{renderInline(block.text, sources)}</p>
           );
         }
 
@@ -1022,7 +1024,7 @@ function AnswerContent({ text }: { text: string }) {
         return (
           <ListTag key={`${block.type}-${index}`}>
             {block.items.map((item, itemIndex) => (
-              <li key={`${itemIndex}-${item.slice(0, 32)}`}>{renderInline(item)}</li>
+              <li key={`${itemIndex}-${item.slice(0, 32)}`}>{renderInline(item, sources)}</li>
             ))}
           </ListTag>
         );
@@ -1032,15 +1034,16 @@ function AnswerContent({ text }: { text: string }) {
 }
 
 /**
- * Render the limited inline markdown we tolerate inside a paragraph or list
- * item: ``**bold**`` and ``` `code` ```. Everything else stays as text. We
- * deliberately do NOT support links or images here — citation URLs are
- * surfaced through the dedicated Sources tab, and avoiding raw HTML keeps
- * the XSS surface zero.
+ * Render the limited inline markup we tolerate inside a paragraph or list
+ * item: ``**bold**``, ``` `code` ```, and citation labels like ``[S1]`` which
+ * resolve to clickable links pointing at the matching citation URL when
+ * available. We deliberately do NOT parse general markdown links — citation
+ * URLs are the only links we want to surface, and keeping the inline grammar
+ * narrow keeps the XSS surface at zero.
  */
-function renderInline(text: string): ReactNode {
+function renderInline(text: string, citations: Citation[]): ReactNode {
   const parts: ReactNode[] = [];
-  const pattern = /\*\*(.+?)\*\*|`([^`]+)`/g;
+  const pattern = /\*\*(.+?)\*\*|`([^`]+)`|\[S(\d+)\]/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let key = 0;
@@ -1052,6 +1055,25 @@ function renderInline(text: string): ReactNode {
       parts.push(<strong key={`b-${key++}`}>{match[1]}</strong>);
     } else if (match[2] !== undefined) {
       parts.push(<code key={`c-${key++}`}>{match[2]}</code>);
+    } else if (match[3] !== undefined) {
+      const index = Number.parseInt(match[3], 10);
+      const citation = citations[index - 1];
+      if (citation?.url) {
+        parts.push(
+          <a
+            className={`citation-ref source-${citation.source_type ?? "repo"}`}
+            key={`s-${key++}`}
+            href={citation.url}
+            target="_blank"
+            rel="noreferrer"
+            title={citation.heading_path ?? citation.title ?? `Source ${index}`}
+          >
+            S{index}
+          </a>
+        );
+      } else {
+        parts.push(<span className="citation-ref-missing" key={`s-${key++}`}>S{index}</span>);
+      }
     }
     lastIndex = match.index + match[0].length;
   }
