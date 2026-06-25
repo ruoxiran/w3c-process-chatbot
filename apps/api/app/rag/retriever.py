@@ -1,7 +1,9 @@
 import json
+import logging
 import math
 import re
-from collections import Counter
+import threading
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -11,6 +13,10 @@ from app.core.paths import resolve_data_path
 from app.models.schemas import Citation, SourceType
 from app.rag.guide_topics import matching_guide_topics
 from app.services.embeddings import OllamaEmbeddingClient
+
+
+logger = logging.getLogger(__name__)
+_QUERY_EMBEDDING_CACHE_LIMIT = 256
 
 
 # BM25 tuning parameters
@@ -93,7 +99,12 @@ class Retriever:
         )
         self._index: CorpusIndex | None = None
         self._dense_cache: DenseEmbeddingCache | None = None
-        self._query_embeddings: dict[str, list[float] | None] = {}
+        # Bounded LRU. Workflow is a singleton now, so without an upper bound
+        # this would grow with every distinct query for the life of the process.
+        self._query_embeddings: OrderedDict[str, list[float] | None] = OrderedDict()
+        self._index_lock = threading.Lock()
+        self._dense_cache_lock = threading.Lock()
+        self._query_embedding_lock = threading.Lock()
 
     def retrieve(self, query: str) -> list[Citation]:
         corpus_hits = self._retrieve_from_corpus(query)
@@ -174,13 +185,21 @@ class Retriever:
         return _ensure_topic_entrypoint_citations(query, citations, limit)
 
     def _query_embedding(self, query: str) -> list[float] | None:
-        if query in self._query_embeddings:
-            return self._query_embeddings[query]
+        with self._query_embedding_lock:
+            if query in self._query_embeddings:
+                # LRU touch
+                self._query_embeddings.move_to_end(query)
+                return self._query_embeddings[query]
         try:
             embedding = self.embedding_client.embed(model=self.embedding_model, text=_embedding_text(query, max_chars=4000))
-        except Exception:
+        except Exception as exc:
+            logger.warning("Query embedding failed; falling back to lexical retrieval only", exc_info=exc)
             embedding = None
-        self._query_embeddings[query] = embedding
+        with self._query_embedding_lock:
+            self._query_embeddings[query] = embedding
+            self._query_embeddings.move_to_end(query)
+            while len(self._query_embeddings) > _QUERY_EMBEDDING_CACHE_LIMIT:
+                self._query_embeddings.popitem(last=False)
         return embedding
 
     def _load_dense_cache(self) -> DenseEmbeddingCache | None:
@@ -189,81 +208,86 @@ class Retriever:
         mtime = self.embedding_cache_path.stat().st_mtime
         if self._dense_cache and self._dense_cache.mtime == mtime:
             return self._dense_cache
-
-        vectors: dict[str, list[float]] = {}
-        model = ""
-        with self.embedding_cache_path.open("r", encoding="utf-8") as cache:
-            for line in cache:
-                if not line.strip():
-                    continue
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if payload.get("model") and not model:
-                    model = str(payload["model"])
-                if model and payload.get("model") != model:
-                    continue
-                chunk_id = payload.get("chunk_id")
-                vector = payload.get("embedding")
-                if not isinstance(chunk_id, str) or not isinstance(vector, list):
-                    continue
-                values = [float(value) for value in vector if isinstance(value, (int, float))]
-                if values:
-                    vectors[chunk_id] = values
-        if model and model != self.embedding_model:
-            return None
-        self._dense_cache = DenseEmbeddingCache(vectors=vectors, model=model or self.embedding_model, mtime=mtime)
-        return self._dense_cache
+        with self._dense_cache_lock:
+            if self._dense_cache and self._dense_cache.mtime == mtime:
+                return self._dense_cache
+            vectors: dict[str, list[float]] = {}
+            model = ""
+            with self.embedding_cache_path.open("r", encoding="utf-8") as cache:
+                for line in cache:
+                    if not line.strip():
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if payload.get("model") and not model:
+                        model = str(payload["model"])
+                    if model and payload.get("model") != model:
+                        continue
+                    chunk_id = payload.get("chunk_id")
+                    vector = payload.get("embedding")
+                    if not isinstance(chunk_id, str) or not isinstance(vector, list):
+                        continue
+                    values = [float(value) for value in vector if isinstance(value, (int, float))]
+                    if values:
+                        vectors[chunk_id] = values
+            if model and model != self.embedding_model:
+                return None
+            self._dense_cache = DenseEmbeddingCache(vectors=vectors, model=model or self.embedding_model, mtime=mtime)
+            return self._dense_cache
 
     def _load_index(self) -> CorpusIndex:
         if not self.corpus_path.exists():
             return CorpusIndex(records=[], document_frequency=Counter(), average_length=0, mtime=0)
 
         mtime = self.corpus_path.stat().st_mtime
+        # Fast path: index is already loaded and the file hasn't changed.
         if self._index and self._index.mtime == mtime:
             return self._index
-
-        records: list[CorpusRecord] = []
-        document_frequency: Counter[str] = Counter()
-        with self.corpus_path.open("r", encoding="utf-8") as corpus:
-            for line in corpus:
-                if not line.strip():
-                    continue
-                chunk = json.loads(line)
-                if _is_toc_chunk(chunk) or _is_low_quality_chunk(chunk):
-                    continue
-                title = str(chunk.get("title", "")).lower()
-                heading = str(chunk.get("heading_path", "")).lower()
-                body = str(chunk.get("text", "")).lower()
-                url = str(chunk.get("source_url") or "")
-                source_type = str(chunk.get("source_type") or "repo")
-                weighted_text = f"{title} {title} {heading} {heading} {body} {source_type} {url}"
-                tokens = Counter(_tokenize(weighted_text))
-                if not tokens:
-                    continue
-                document_frequency.update(tokens.keys())
-                records.append(
-                    CorpusRecord(
-                        chunk=chunk,
-                        title=title,
-                        heading=heading,
-                        body=body,
-                        url=url,
-                        source_type=source_type,
-                        tokens=tokens,
-                        length=sum(tokens.values()),
+        # Slow path: take the lock and re-check before doing the expensive parse.
+        with self._index_lock:
+            if self._index and self._index.mtime == mtime:
+                return self._index
+            records: list[CorpusRecord] = []
+            document_frequency: Counter[str] = Counter()
+            with self.corpus_path.open("r", encoding="utf-8") as corpus:
+                for line in corpus:
+                    if not line.strip():
+                        continue
+                    chunk = json.loads(line)
+                    if _is_toc_chunk(chunk) or _is_low_quality_chunk(chunk):
+                        continue
+                    title = str(chunk.get("title", "")).lower()
+                    heading = str(chunk.get("heading_path", "")).lower()
+                    body = str(chunk.get("text", "")).lower()
+                    url = str(chunk.get("source_url") or "")
+                    source_type = str(chunk.get("source_type") or "repo")
+                    weighted_text = f"{title} {title} {heading} {heading} {body} {source_type} {url}"
+                    tokens = Counter(_tokenize(weighted_text))
+                    if not tokens:
+                        continue
+                    document_frequency.update(tokens.keys())
+                    records.append(
+                        CorpusRecord(
+                            chunk=chunk,
+                            title=title,
+                            heading=heading,
+                            body=body,
+                            url=url,
+                            source_type=source_type,
+                            tokens=tokens,
+                            length=sum(tokens.values()),
+                        )
                     )
-                )
-
-        average_length = sum(record.length for record in records) / len(records) if records else 0
-        self._index = CorpusIndex(
-            records=records,
-            document_frequency=document_frequency,
-            average_length=average_length,
-            mtime=mtime,
-        )
-        return self._index
+            average_length = sum(record.length for record in records) / len(records) if records else 0
+            self._index = CorpusIndex(
+                records=records,
+                document_frequency=document_frequency,
+                average_length=average_length,
+                mtime=mtime,
+            )
+            return self._index
 
 
 def _query_terms(query: str) -> list[str]:

@@ -1,3 +1,5 @@
+import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TypedDict
@@ -18,6 +20,9 @@ from app.services.live_fetch import fetch_page_excerpt
 from app.services.scope import classify_scope
 from app.services.task_planner import build_planned_retrieval_query, plan_task
 from app.services.w3c_api import W3CAPIClient
+
+
+logger = logging.getLogger(__name__)
 
 
 class ChatState(TypedDict, total=False):
@@ -149,6 +154,7 @@ class ChatWorkflow:
                         prefetched_entities = entities_future.result()
                     except Exception as exc:  # pragma: no cover - external service fallback
                         prefetch_error = type(exc).__name__
+                        logger.warning("W3C API entity prefetch failed", exc_info=exc)
             if router_decision.attempted:
                 if router_decision.likely_in_scope and router_decision.confidence >= self.settings.llm_router_min_confidence:
                     classification = ClassifyResponse(
@@ -294,6 +300,7 @@ class ChatWorkflow:
                 )
             except Exception as exc:  # pragma: no cover - external service fallback
                 audit["w3c_api_error"] = type(exc).__name__
+                logger.warning("W3C API entity resolution failed", exc_info=exc)
                 trace.append(
                     WorkflowStep(
                         id="w3c_api_resolver",
@@ -330,6 +337,7 @@ class ChatWorkflow:
                 )
             except Exception as exc:  # pragma: no cover - external service fallback
                 audit["draft_context_error"] = type(exc).__name__
+                logger.warning("GitHub draft context resolution failed", exc_info=exc)
                 trace.append(
                     WorkflowStep(
                         id="draft_context_resolver",
@@ -355,6 +363,7 @@ class ChatWorkflow:
                 )
             except Exception as exc:  # pragma: no cover - local filesystem fallback
                 audit["compiled_context_error"] = type(exc).__name__
+                logger.warning("Compiled context resolution failed", exc_info=exc)
                 trace.append(
                     WorkflowStep(
                         id="compiled_context_resolver",
@@ -495,6 +504,12 @@ class ChatWorkflow:
         selected_model = _selected_model(request, self.settings)
         model_generation = "template"
 
+        # When injection language is detected we throw away the conversation
+        # history before handing it to the model. The audit field already
+        # records that injection was suspected; this is the enforcement that
+        # makes the safety_note actually safe.
+        safe_history = [] if classification.injection_risk else request.history
+
         if self.settings.llm_provider == "ollama":
             try:
                 generation = self.ollama_client.generate_answer(
@@ -504,7 +519,7 @@ class ChatWorkflow:
                     citations=citations,
                     fallback_answer=answer,
                     fallback_next_steps=next_steps,
-                    history=request.history,
+                    history=safe_history,
                     entities=resolved_entities,
                     task_plan=task_plan,
                     process_state=process_state,
@@ -524,6 +539,7 @@ class ChatWorkflow:
                 model_generation = "template_fallback"
                 audit["model_generation"] = model_generation
                 audit["model_error"] = type(exc).__name__
+                logger.warning("Ollama answer generation failed; using template fallback", exc_info=exc)
         elif self.settings.llm_provider in {"openai", "openai-compatible", "openrouter"}:
             try:
                 generation = self.openai_compatible_client.generate_answer(
@@ -533,7 +549,7 @@ class ChatWorkflow:
                     citations=citations,
                     fallback_answer=answer,
                     fallback_next_steps=next_steps,
-                    history=request.history,
+                    history=safe_history,
                     entities=resolved_entities,
                     task_plan=task_plan,
                     process_state=process_state,
@@ -553,6 +569,7 @@ class ChatWorkflow:
                 model_generation = "template_fallback"
                 audit["model_generation"] = model_generation
                 audit["model_error"] = type(exc).__name__
+                logger.warning("OpenAI-compatible answer generation failed; using template fallback", exc_info=exc)
         else:
             audit["model_generation"] = model_generation
 
@@ -626,14 +643,17 @@ _ENGLISH_STOPWORDS = frozenset({
 _CJK_FUNCTION_CHARS = frozenset("的是吗呢了过被把就也都还又咋么么了着")
 
 
+_REF_PUNCT_RE = re.compile(r"[^a-z0-9一-鿿\s]+")
+_REF_TOKEN_RE = re.compile(r"[a-z0-9]+|[一-鿿]+")
+_REF_ENGLISH_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
 def _is_pure_reference(message: str) -> bool:
     """True when message has no new content beyond referential/function words.
 
     Used to allow follow-ups like "then?", "继续", "那下一步呢？" to inherit scope,
     while blocking "how about Beijing" (which carries the new noun "Beijing").
     """
-    import re as _re
-
     text = message.strip().lower()
     if not text:
         return True
@@ -641,13 +661,11 @@ def _is_pure_reference(message: str) -> bool:
     cleaned = text
     for marker in sorted(FOLLOW_UP_MARKERS, key=len, reverse=True):
         cleaned = cleaned.replace(marker.lower(), " ")
-    # Remove punctuation, keep alphanum and CJK ranges.
-    cleaned = _re.sub(r"[^a-z0-9一-鿿\s]+", " ", cleaned).strip()
+    cleaned = _REF_PUNCT_RE.sub(" ", cleaned).strip()
     if not cleaned:
         return True
-    tokens = _re.findall(r"[a-z0-9]+|[一-鿿]+", cleaned)
-    for token in tokens:
-        if _re.fullmatch(r"[a-z0-9]+", token):
+    for token in _REF_TOKEN_RE.findall(cleaned):
+        if _REF_ENGLISH_TOKEN_RE.fullmatch(token):
             if token not in _ENGLISH_STOPWORDS:
                 return False
         else:

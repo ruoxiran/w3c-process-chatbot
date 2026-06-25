@@ -120,33 +120,39 @@ class OllamaClient:
         text = response.json().get("response", "").strip()
         return OllamaGeneration(text=_clean_model_text(text), model=model)
 
-    def _build_prompt(
-        self,
-        *,
-        question: str,
-        locale: str,
-        citations: list[Citation],
-        fallback_answer: str,
-        fallback_next_steps: list[str],
-        history: list[ChatTurn],
-        entities: list[W3CEntity],
-        task_plan: TaskPlan | None,
-        process_state: ProcessState | None,
-        evidence_coverage: EvidenceCoverage | None,
-        draft_contexts: list[DraftContext],
-        compiled_context: CompiledContext | None,
-        supplementary_context: str | None = None,
-    ) -> str:
-        source_lines = "\n\n".join(_format_source(index, citation) for index, citation in enumerate(citations, start=1))
-        steps = "\n".join(f"- {step}" for step in fallback_next_steps)
-        conversation_context = _format_history(history)
-        entity_context = _format_entities(entities)
-        draft_context = _format_draft_contexts(draft_contexts)
-        compiled_context_text = _format_compiled_context(compiled_context)
-        task_context = _format_task_context(task_plan, process_state, evidence_coverage)
-        supplementary_section = _format_supplementary(supplementary_context)
-        language = "English" if locale.startswith("en") else "the same language as the user question"
-        return f"""You are a W3C Process assistant constrained by a safety harness.
+    def _build_prompt(self, **kwargs) -> str:
+        # Thin shim kept for backwards compatibility. The real builder lives at
+        # module scope so other LLM clients can use it without instantiating an
+        # OllamaClient just for its prompt template.
+        return build_prompt(**kwargs)
+
+
+def build_prompt(
+    *,
+    question: str,
+    locale: str,
+    citations: list[Citation],
+    fallback_answer: str,
+    fallback_next_steps: list[str],
+    history: list[ChatTurn],
+    entities: list[W3CEntity],
+    task_plan: TaskPlan | None,
+    process_state: ProcessState | None,
+    evidence_coverage: EvidenceCoverage | None,
+    draft_contexts: list[DraftContext],
+    compiled_context: CompiledContext | None,
+    supplementary_context: str | None = None,
+) -> str:
+    source_lines = "\n\n".join(_format_source(index, citation) for index, citation in enumerate(citations, start=1))
+    steps = "\n".join(f"- {step}" for step in fallback_next_steps)
+    conversation_context = _format_history(history)
+    entity_context = _format_entities(entities)
+    draft_context = _format_draft_contexts(draft_contexts)
+    compiled_context_text = _format_compiled_context(compiled_context)
+    task_context = _format_task_context(task_plan, process_state, evidence_coverage)
+    supplementary_section = _format_supplementary(supplementary_context)
+    language = "English" if locale.startswith("en") else "the same language as the user question"
+    return f"""You are a W3C Process assistant constrained by a safety harness.
 
 Answer in {language}.
 

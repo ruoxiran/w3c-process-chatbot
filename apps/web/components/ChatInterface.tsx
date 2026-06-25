@@ -211,7 +211,13 @@ export function ChatInterface() {
           </div>
         </div>
 
-        <div className="conversation" aria-live="polite">
+        <div
+          className="conversation"
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions"
+          aria-atomic="false"
+        >
           {messages.length ? (
             messages.map((item) => (
               <ChatBubble key={item.id} message={item} onInspect={focusResponse} />
@@ -257,7 +263,9 @@ export function ChatInterface() {
           <button
             type="button"
             role="tab"
+            id="inspector-tab-workflow"
             aria-selected={inspectorTab === "workflow"}
+            aria-controls="inspector-panel-workflow"
             className={inspectorTab === "workflow" ? "active" : ""}
             onClick={() => setInspectorTab("workflow")}
           >
@@ -266,7 +274,9 @@ export function ChatInterface() {
           <button
             type="button"
             role="tab"
+            id="inspector-tab-sources"
             aria-selected={inspectorTab === "sources"}
+            aria-controls="inspector-panel-sources"
             className={inspectorTab === "sources" ? "active" : ""}
             onClick={() => setInspectorTab("sources")}
           >
@@ -275,7 +285,9 @@ export function ChatInterface() {
           <button
             type="button"
             role="tab"
+            id="inspector-tab-entities"
             aria-selected={inspectorTab === "entities"}
+            aria-controls="inspector-panel-entities"
             className={inspectorTab === "entities" ? "active" : ""}
             onClick={() => setInspectorTab("entities")}
           >
@@ -284,7 +296,9 @@ export function ChatInterface() {
           <button
             type="button"
             role="tab"
+            id="inspector-tab-quality"
             aria-selected={inspectorTab === "quality"}
+            aria-controls="inspector-panel-quality"
             className={inspectorTab === "quality" ? "active" : ""}
             onClick={() => setInspectorTab("quality")}
           >
@@ -293,7 +307,9 @@ export function ChatInterface() {
           <button
             type="button"
             role="tab"
+            id="inspector-tab-version"
             aria-selected={inspectorTab === "version"}
+            aria-controls="inspector-panel-version"
             className={inspectorTab === "version" ? "active" : ""}
             onClick={() => setInspectorTab("version")}
           >
@@ -302,25 +318,39 @@ export function ChatInterface() {
         </div>
 
         {inspectorTab === "workflow" ? (
-          <WorkflowPanel response={activeResponse ?? undefined} steps={activeResponse?.workflow_trace} isLoading={isLoading} />
+          <div role="tabpanel" id="inspector-panel-workflow" aria-labelledby="inspector-tab-workflow">
+            <WorkflowPanel response={activeResponse ?? undefined} steps={activeResponse?.workflow_trace} isLoading={isLoading} />
+          </div>
         ) : null}
         {inspectorTab === "entities" ? (
-          <EntityPanel
-            compiledContext={activeResponse?.compiled_context ?? null}
-            entities={activeResponse?.resolved_entities ?? []}
-            draftContexts={activeResponse?.draft_contexts ?? []}
-          />
+          <div role="tabpanel" id="inspector-panel-entities" aria-labelledby="inspector-tab-entities">
+            <EntityPanel
+              compiledContext={activeResponse?.compiled_context ?? null}
+              entities={activeResponse?.resolved_entities ?? []}
+              draftContexts={activeResponse?.draft_contexts ?? []}
+            />
+          </div>
         ) : null}
-        {inspectorTab === "sources" ? <CitationPanel response={activeResponse} mode="sources" /> : null}
+        {inspectorTab === "sources" ? (
+          <div role="tabpanel" id="inspector-panel-sources" aria-labelledby="inspector-tab-sources">
+            <CitationPanel response={activeResponse} mode="sources" />
+          </div>
+        ) : null}
         {inspectorTab === "quality" ? (
-          <QualityPanel
-            result={evalRun}
-            isLoading={isEvalLoading}
-            error={evalError}
-            onRun={runQualityEval}
-          />
+          <div role="tabpanel" id="inspector-panel-quality" aria-labelledby="inspector-tab-quality">
+            <QualityPanel
+              result={evalRun}
+              isLoading={isEvalLoading}
+              error={evalError}
+              onRun={runQualityEval}
+            />
+          </div>
         ) : null}
-        {inspectorTab === "version" ? <CitationPanel response={activeResponse} mode="version" /> : null}
+        {inspectorTab === "version" ? (
+          <div role="tabpanel" id="inspector-panel-version" aria-labelledby="inspector-tab-version">
+            <CitationPanel response={activeResponse} mode="version" />
+          </div>
+        ) : null}
       </aside>
     </main>
   );
@@ -796,15 +826,18 @@ function FeedbackControls({ response, question, messageId, model }: FeedbackCont
     void send("down");
   }
 
-  function onCommentSubmit() {
+  async function onCommentSubmit() {
     if (!comment.trim()) {
       setShowComment(false);
       return;
     }
-    void send(submitted ?? "down", comment).then(() => {
+    try {
+      await send(submitted ?? "down", comment);
       setComment("");
       setShowComment(false);
-    });
+    } catch {
+      // ``send`` already populated ``error`` via state; nothing else to do here.
+    }
   }
 
   return (

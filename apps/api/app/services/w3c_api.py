@@ -98,10 +98,12 @@ class W3CAPIClient:
 
     def _catalog(self) -> list[CatalogItem]:
         cache_key = f"{self.base_url}:catalog:{self.catalog_pages}"
+        # Atomic TTL check under the lock so two concurrent callers can't both
+        # miss and trigger duplicate catalog fetches.
         with self._cache_lock:
             cached = self._catalog_cache.get(cache_key)
-        if cached and time.time() - cached[0] < self.cache_ttl:
-            return cached[1]
+            if cached and time.time() - cached[0] < self.cache_ttl:
+                return cached[1]
 
         items: list[CatalogItem] = []
         items.extend(self._catalog_endpoint("specifications", "specification"))
@@ -179,28 +181,45 @@ class W3CAPIClient:
             if isinstance(team_contacts_link, dict) and team_contacts_link.get("href"):
                 team_contacts = self._link_titles(str(team_contacts_link["href"]), "team-contacts")
 
-        entity = W3CEntity(
+        resolved_shortname = str(shortname) if shortname else _shortname_from_api_url(item.api_url)
+        resolved_status = str(status) if status else None
+        resolved_public_url = str(public_url) if public_url else None
+        resolved_process_rules_url = process_rules_url
+        resolved_group_type = str(detail.get("type")) if detail.get("type") else None
+        retrieval_hints = _retrieval_hints(
+            shortname=resolved_shortname,
+            status=resolved_status,
+            latest_version_date=latest_version_date,
+            group_type=resolved_group_type,
+            charter_end=charter_end,
+            public_url=resolved_public_url,
+            process_rules_url=str(resolved_process_rules_url) if resolved_process_rules_url else None,
+            deliverers=deliverers,
+            team_contacts=team_contacts,
+            charter_url=charter_url,
+            patent_policy_url=patent_policy_url,
+        )
+        return W3CEntity(
             entity_type=item.entity_type,
             title=title,
-            shortname=str(shortname) if shortname else _shortname_from_api_url(item.api_url),
+            shortname=resolved_shortname,
             api_url=item.api_url,
-            public_url=str(public_url) if public_url else None,
+            public_url=resolved_public_url,
             editor_draft_url=editor_draft_url if item.entity_type == "specification" else None,
-            status=str(status) if status else None,
+            status=resolved_status,
             latest_version_url=str(latest_version_url) if latest_version_url else None,
             latest_version_date=latest_version_date,
-            process_rules_url=process_rules_url,
+            process_rules_url=resolved_process_rules_url,
             deliverers=deliverers,
             charter_url=charter_url,
             charter_end=charter_end,
             patent_policy_url=patent_policy_url,
             team_contacts=team_contacts,
-            group_type=str(detail.get("type")) if detail.get("type") else None,
+            group_type=resolved_group_type,
             description=description,
             confidence=confidence,
+            retrieval_hints=retrieval_hints,
         )
-        entity.retrieval_hints = _retrieval_hints(entity)
-        return entity
 
     def _link_titles(self, api_url: str, relation: str) -> list[str]:
         payload = self._detail(api_url)
@@ -213,8 +232,8 @@ class W3CAPIClient:
     def _detail(self, api_url: str) -> dict[str, object]:
         with self._cache_lock:
             cached = self._detail_cache.get(api_url)
-        if cached and time.time() - cached[0] < self.cache_ttl:
-            return cached[1]
+            if cached and time.time() - cached[0] < self.cache_ttl:
+                return cached[1]
         payload = self._get(api_url)
         detail = payload if isinstance(payload, dict) else {}
         with self._cache_lock:
@@ -443,27 +462,40 @@ def _clean_description(value: object) -> str | None:
     return text or None
 
 
-def _retrieval_hints(entity: W3CEntity) -> list[str]:
+def _retrieval_hints(
+    *,
+    shortname: str | None,
+    status: str | None,
+    latest_version_date: str | None,
+    group_type: str | None,
+    charter_end: str | None,
+    public_url: str | None,
+    process_rules_url: str | None,
+    deliverers: list[str],
+    team_contacts: list[str],
+    charter_url: str | None,
+    patent_policy_url: str | None,
+) -> list[str]:
     hints: list[str] = []
-    values = [
-        entity.shortname,
-        entity.status,
-        entity.latest_version_date,
-        entity.group_type,
-        entity.charter_end,
-        str(entity.public_url) if entity.public_url else None,
-        str(entity.process_rules_url) if entity.process_rules_url else None,
-        *entity.deliverers,
-        *entity.team_contacts,
+    values: list[str | None] = [
+        shortname,
+        status,
+        latest_version_date,
+        group_type,
+        charter_end,
+        public_url,
+        process_rules_url,
+        *deliverers,
+        *team_contacts,
     ]
-    status = (entity.status or "").lower()
-    if "candidate recommendation" in status:
+    status_lc = (status or "").lower()
+    if "candidate recommendation" in status_lc:
         values.extend(["transitioning to Recommendation", "AC Review", "Exclusion Opportunity"])
-    if "working draft" in status:
+    if "working draft" in status_lc:
         values.extend(["wide review", "horizontal review"])
-    if entity.charter_url:
+    if charter_url:
         values.append("active charter")
-    if entity.patent_policy_url:
+    if patent_policy_url:
         values.append("Patent Policy")
 
     seen: set[str] = set()

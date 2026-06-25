@@ -1,9 +1,18 @@
+import logging
 import re
+import secrets
+from functools import lru_cache
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.evals.adversarial_cases import ADVERSARIAL_CASES
 from app.evals.cases import EVAL_CASES
 from app.evals.llm_judge import run_llm_judge
@@ -33,7 +42,59 @@ from app.services.ollama import OllamaClient
 from app.services.openai_compatible import OpenAICompatibleClient
 from app.workflows.chat_workflow import ChatWorkflow
 
+
+logger = logging.getLogger(__name__)
+
 settings = get_settings()
+
+# Endpoints that bypass the API-key gate.
+_AUTH_EXEMPT_PATHS = frozenset({"/health"})
+
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    """Constant-time API-key gate on every endpoint except ``/health``.
+
+    Behaviour by configuration:
+
+    - ``settings.api_key`` set → requests must send ``X-API-Key`` matching it
+      or get a 401. Missing header also returns 401.
+    - ``settings.api_key`` is ``None`` AND ``app_env`` is "development" → gate
+      is open, lets local development work without configuration.
+    - ``settings.api_key`` is ``None`` AND ``app_env`` is anything else → fail
+      closed; the deployment is misconfigured.
+    """
+
+    def __init__(self, app, settings: Settings) -> None:
+        super().__init__(app)
+        self._settings = settings
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path in _AUTH_EXEMPT_PATHS:
+            return await call_next(request)
+        expected = self._settings.api_key
+        if not expected:
+            if self._settings.app_env == "development":
+                return await call_next(request)
+            return JSONResponse({"detail": "API key not configured"}, status_code=503)
+        provided = request.headers.get("X-API-Key", "")
+        if not provided or not secrets.compare_digest(provided, expected):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return await call_next(request)
+
+
+# Limit by API-key when present (so different keys get independent buckets);
+# otherwise fall back to remote address. This avoids collapsing all unauth dev
+# traffic into one bucket while still defending against abuse.
+def _rate_limit_key(request: Request) -> str:
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        return f"key:{api_key}"
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_rate_limit_key, default_limits=[settings.rate_limit_default])
+
+
 app = FastAPI(
     title="W3C Process Chatbot API",
     version="0.1.0",
@@ -42,25 +103,63 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.expose_openapi_docs else None,
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler := lambda r, e: JSONResponse(
+    {"detail": "Rate limit exceeded. Please retry shortly."}, status_code=429
+))
+
+# Order matters: API-key auth runs FIRST, then rate limiting, then CORS.
+# Starlette processes middleware in reverse-add order, so add CORS last.
+app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(APIKeyMiddleware, settings=settings)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=settings.cors_methods,
+    allow_headers=settings.cors_headers,
 )
 
 
-def workflow() -> ChatWorkflow:
+@lru_cache
+def _workflow_singleton() -> ChatWorkflow:
+    """Long-lived workflow instance so retriever/W3C API caches survive across requests."""
     return ChatWorkflow(settings)
 
 
-def compiled_store() -> CompiledContextStore:
+def workflow() -> ChatWorkflow:
+    return _workflow_singleton()
+
+
+@lru_cache
+def _compiled_store_singleton() -> CompiledContextStore:
     return CompiledContextStore(settings)
 
 
-def feedback_store() -> FeedbackStore:
+def compiled_store() -> CompiledContextStore:
+    return _compiled_store_singleton()
+
+
+@lru_cache
+def _feedback_store_singleton() -> FeedbackStore:
     return FeedbackStore(settings.feedback_log_path)
+
+
+def feedback_store() -> FeedbackStore:
+    return _feedback_store_singleton()
+
+
+def _strip_audit_if_disabled(response: ChatResponse) -> ChatResponse:
+    """Hide the audit blob from clients unless ``expose_audit`` is on.
+
+    The audit blob contains internal routing/retrieval state (provider, model,
+    task plan, evidence coverage, router decision, live-fetch URL). Useful in
+    dev for inspecting the workflow; in production it leaks internal architecture
+    and whether prompt-injection was suspected. Strip by default.
+    """
+    if settings.expose_audit:
+        return response
+    return response.model_copy(update={"audit": {}})
 
 
 @app.get("/health")
@@ -69,13 +168,14 @@ def health() -> dict[str, str]:
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
-    return workflow().run(request)
+@limiter.limit(settings.rate_limit_chat)
+def chat(request: Request, body: ChatRequest, wf: ChatWorkflow = Depends(workflow)) -> ChatResponse:
+    return _strip_audit_if_disabled(wf.run(body))
 
 
 @app.post("/classify", response_model=ClassifyResponse)
-def classify(request: ClassifyRequest) -> ClassifyResponse:
-    return workflow().classify(ChatRequest(message=request.message))
+def classify(request: Request, body: ClassifyRequest, wf: ChatWorkflow = Depends(workflow)) -> ClassifyResponse:
+    return wf.classify(ChatRequest(message=body.message))
 
 
 @app.get("/sources/status", response_model=SourceStatusResponse)
@@ -101,6 +201,7 @@ def models() -> ModelsResponse:
             ).list_models()
             return ModelsResponse(default_model=settings.llm_model, models=ollama_models)
         except Exception as exc:  # pragma: no cover - external service fallback
+            logger.warning("ollama list_models failed", exc_info=exc)
             return ModelsResponse(default_model=settings.llm_model, models=[], error=type(exc).__name__)
     if settings.llm_provider in {"openai", "openai-compatible", "openrouter"}:
         try:
@@ -111,6 +212,7 @@ def models() -> ModelsResponse:
             ).list_models()
             return ModelsResponse(default_model=settings.openai_compatible_model, models=online_models)
         except Exception as exc:  # pragma: no cover - external service fallback
+            logger.warning("openai-compatible list_models failed", exc_info=exc)
             return ModelsResponse(
                 default_model=settings.openai_compatible_model,
                 models=[
@@ -158,14 +260,17 @@ def compiled_status() -> CompiledStatusResponse:
 
 
 @app.post("/eval/run", response_model=EvalRunResponse)
-def run_eval(include_adversarial: bool = False) -> EvalRunResponse:
+@limiter.limit(settings.rate_limit_eval)
+def run_eval(request: Request, include_adversarial: bool = False) -> EvalRunResponse:
     wf = build_eval_workflow(settings)
     cases = [*EVAL_CASES, *ADVERSARIAL_CASES] if include_adversarial else EVAL_CASES
     return run_eval_cases(cases, wf.run)
 
 
 @app.post("/eval/llm-judge", response_model=LLMJudgeReportResponse)
+@limiter.limit(settings.rate_limit_judge)
 def run_llm_judge_endpoint(
+    request: Request,
     include_adversarial: bool = True,
     judge_model: str | None = None,
 ) -> LLMJudgeReportResponse:
@@ -175,10 +280,9 @@ def run_llm_judge_endpoint(
     score the actual LLM output, not the template fallback.
     """
     cases = [*EVAL_CASES, *ADVERSARIAL_CASES] if include_adversarial else EVAL_CASES
-    workflow_instance = ChatWorkflow(settings)
     report = run_llm_judge(
         cases=cases,
-        workflow=workflow_instance,
+        workflow=workflow(),
         settings=settings,
         judge_model=judge_model,
     )

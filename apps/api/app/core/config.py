@@ -56,11 +56,26 @@ class Settings(BaseSettings):
     live_fetch_max_chars: int = 3500
     live_fetch_timeout_seconds: float = 8.0
     feedback_log_path: str = "data/feedback/feedback.jsonl"
-    expose_openapi_docs: bool = True  # set false in production to hide /docs /redoc /openapi.json
+    # /docs /redoc /openapi.json are hidden by default; opt in only in development.
+    expose_openapi_docs: bool = False
+    # Optional API key gate. When set, all endpoints (except /health) require
+    # ``X-API-Key: <value>`` on the request. None disables the gate so local
+    # development still works without configuration.
+    api_key: str | None = None
+    # Per-IP rate limits applied via slowapi. Tweak for production.
+    rate_limit_chat: str = "30/minute"
+    rate_limit_eval: str = "3/minute"
+    rate_limit_judge: str = "1/minute"
+    rate_limit_default: str = "120/minute"
+    # When False, the audit blob is stripped from ChatResponse before it leaves
+    # the API. Set True only when you want full introspection in the UI.
+    expose_audit: bool = False
     index_refresh_cron: str = "0 */6 * * *"
     require_citations: bool = True
     enable_member_only_sources: bool = False
     cors_allow_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    cors_allow_methods: str = "GET,POST"
+    cors_allow_headers: str = "Content-Type,X-API-Key"
 
     @property
     def allowlist_entries(self) -> list[str]:
@@ -73,6 +88,14 @@ class Settings(BaseSettings):
     @property
     def github_allowed_orgs(self) -> list[str]:
         return [entry.strip().lower() for entry in self.github_context_allowed_orgs.split(",") if entry.strip()]
+
+    @property
+    def cors_methods(self) -> list[str]:
+        return [method.strip().upper() for method in self.cors_allow_methods.split(",") if method.strip()]
+
+    @property
+    def cors_headers(self) -> list[str]:
+        return [header.strip() for header in self.cors_allow_headers.split(",") if header.strip()]
 
 
 @lru_cache

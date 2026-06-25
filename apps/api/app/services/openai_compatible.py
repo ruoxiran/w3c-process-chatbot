@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import httpx
 
 from app.models.schemas import ChatTurn, Citation, CompiledContext, DraftContext, EvidenceCoverage, ModelInfo, ProcessState, TaskPlan, W3CEntity
-from app.services.ollama import OllamaClient, _clean_model_text, _extract_json_object
+from app.services.ollama import _clean_model_text, _extract_json_object, build_prompt
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ class OpenAICompatibleClient:
         compiled_context: CompiledContext | None = None,
         supplementary_context: str | None = None,
     ) -> OpenAICompatibleGeneration:
-        prompt = OllamaClient("", self.timeout_seconds)._build_prompt(
+        prompt = build_prompt(
             question=question,
             locale=locale,
             citations=citations,
@@ -135,7 +135,7 @@ class OpenAICompatibleClient:
         Caller is responsible for assembling and post-cleaning the final text
         (call ``_clean_model_text`` on the joined result).
         """
-        prompt = OllamaClient("", self.timeout_seconds)._build_prompt(
+        prompt = build_prompt(
             question=question,
             locale=locale,
             citations=citations,
