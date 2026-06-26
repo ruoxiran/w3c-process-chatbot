@@ -86,6 +86,7 @@ class OllamaClient:
         draft_contexts: list[DraftContext] | None = None,
         compiled_context: CompiledContext | None = None,
         supplementary_context: str | None = None,
+        action_surfaces_text: str = "",
     ) -> OllamaGeneration:
         prompt = self._build_prompt(
             question=question,
@@ -101,6 +102,7 @@ class OllamaClient:
             draft_contexts=draft_contexts or [],
             compiled_context=compiled_context,
             supplementary_context=supplementary_context,
+            action_surfaces_text=action_surfaces_text,
         )
         response = httpx.post(
             f"{self.base_url}/api/generate",
@@ -120,7 +122,8 @@ class OllamaClient:
         text = response.json().get("response", "").strip()
         return OllamaGeneration(text=_clean_model_text(text), model=model)
 
-    def _build_prompt(self, **kwargs) -> str:
+    def _build_prompt(self, **kwargs) -> str:  # noqa: ANN003 — backwards-compat shim
+
         # Thin shim kept for backwards compatibility. The real builder lives at
         # module scope so other LLM clients can use it without instantiating an
         # OllamaClient just for its prompt template.
@@ -142,6 +145,7 @@ def build_prompt(
     draft_contexts: list[DraftContext],
     compiled_context: CompiledContext | None,
     supplementary_context: str | None = None,
+    action_surfaces_text: str = "",
 ) -> str:
     source_lines = "\n\n".join(_format_source(index, citation) for index, citation in enumerate(citations, start=1))
     steps = "\n".join(f"- {step}" for step in fallback_next_steps)
@@ -151,6 +155,11 @@ def build_prompt(
     compiled_context_text = _format_compiled_context(compiled_context)
     task_context = _format_task_context(task_plan, process_state, evidence_coverage)
     supplementary_section = _format_supplementary(supplementary_context)
+    action_section = (
+        f"\nConcrete action surfaces for this intent (use these to make steps actionable):\n{action_surfaces_text}\n"
+        if action_surfaces_text
+        else ""
+    )
     language = "English" if locale.startswith("en") else "the same language as the user question"
     return f"""You are a W3C Process assistant constrained by a safety harness.
 
@@ -185,9 +194,11 @@ Rules:
 - For lists, prefer "- " bullets. If you must use numbered steps, the numbers must increment correctly (1., 2., 3., ...). Never emit "1." for every line.
 - Do not use bold/italic markers around list-item labels (e.g. do not write "**Identify the Need**: ..."). Plain text only; the surrounding harness handles styling.
 - Only add a brief Process-vs-Guidebook note when the question specifically asks about authority, or when the two sources clearly conflict on the user's question.
+- Make every step actionable, not just informational. Each step should end with a concrete action surface: a specific URL to visit, a mailto: address to email, a github.com/<org>/<repo> issue tracker to file in, or a named role to contact. Prefer the citation URLs and the action surfaces listed below over vague phrases like "consult the appropriate group" or "follow the relevant process". If a step says "request a horizontal review", it must also say *where* — e.g. "file at github.com/w3c/i18n-request/issues/new".
+- Write the action surface inline as a bare URL, mailto:, or "org/repo" identifier inside the sentence. Do NOT invent reference tags like ``[A1]`` for the action surfaces listed above — only ``[Sn]`` is a real citation label that the harness understands. The action surfaces are reference material; the user-visible answer must contain the actual URL or mailto string.
 
 Trusted excerpts:
-{source_lines}
+{source_lines}{action_section}
 
 Task plan and evidence coverage:
 {task_context}

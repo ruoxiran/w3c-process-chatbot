@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from app.core.config import Settings
@@ -28,6 +30,15 @@ from app.services.llm_router import JSONGenerator
 
 
 logger = logging.getLogger(__name__)
+
+
+# Process-wide LRU cache so the same user question doesn't hit the LLM twice
+# within a short period. The Workflow is a singleton (lru_cache in main.py),
+# so this dict lives for the life of the process. Bounded so it can't grow
+# unbounded over a long-running server.
+_REWRITE_CACHE_LIMIT = 256
+_rewrite_cache: OrderedDict[str, "QueryRewriteResult"] = OrderedDict()
+_rewrite_cache_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -54,14 +65,31 @@ def rewrite_query(
 
     Does not include the original message in the returned list — the workflow
     always runs retrieval for the original separately.
+
+    Process-wide cached by ``(message, model)`` so repeated questions (and
+    busy traffic patterns like the eval harness) don't burn rate-limit quota.
     """
     selected_model = model or settings.llm_router_model or settings.llm_model
+    cache_key = f"{selected_model}::{user_message.strip()}"
+    with _rewrite_cache_lock:
+        cached = _rewrite_cache.get(cache_key)
+        if cached is not None:
+            _rewrite_cache.move_to_end(cache_key)
+            return cached
     prompt = _prompt(user_message)
     try:
         payload = client.generate_json(model=selected_model, prompt=prompt, num_predict=240)
     except Exception as exc:  # pragma: no cover - external model fallback
         logger.warning("Query rewriter LLM call failed; continuing with single-query retrieval", exc_info=exc)
-        return QueryRewriteResult(variants=[], model=selected_model, error=type(exc).__name__)
+        # Cache the failure too — short TTL would be nicer, but for a singleton
+        # workflow the simpler bounded LRU keeps quota under control.
+        result = QueryRewriteResult(variants=[], model=selected_model, error=type(exc).__name__)
+        with _rewrite_cache_lock:
+            _rewrite_cache[cache_key] = result
+            _rewrite_cache.move_to_end(cache_key)
+            while len(_rewrite_cache) > _REWRITE_CACHE_LIMIT:
+                _rewrite_cache.popitem(last=False)
+        return result
 
     raw_variants: list[str] = []
     if isinstance(payload, dict):
@@ -70,10 +98,16 @@ def rewrite_query(
             if isinstance(value, list):
                 raw_variants = value
                 break
-    return QueryRewriteResult(
+    result = QueryRewriteResult(
         variants=_clean(raw_variants, user_message),
         model=selected_model,
     )
+    with _rewrite_cache_lock:
+        _rewrite_cache[cache_key] = result
+        _rewrite_cache.move_to_end(cache_key)
+        while len(_rewrite_cache) > _REWRITE_CACHE_LIMIT:
+            _rewrite_cache.popitem(last=False)
+    return result
 
 
 def _clean(raw: list[object], original: str) -> list[str]:

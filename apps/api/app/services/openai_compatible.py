@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 import json
+import logging
+import random
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 
 import httpx
+
+
+logger = logging.getLogger(__name__)
+
+# Statuses we should treat as transient. 429 is the common rate-limit code;
+# 5xx is upstream-transient. Everything else (4xx) is the caller's fault and
+# retrying would just burn quota.
+_RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+_MAX_RETRIES = 3
 
 from app.models.schemas import ChatTurn, Citation, CompiledContext, DraftContext, EvidenceCoverage, ModelInfo, ProcessState, TaskPlan, W3CEntity
 from app.services.ollama import _clean_model_text, _extract_json_object, build_prompt
@@ -79,6 +91,7 @@ class OpenAICompatibleClient:
         draft_contexts: list[DraftContext] | None = None,
         compiled_context: CompiledContext | None = None,
         supplementary_context: str | None = None,
+        action_surfaces_text: str = "",
     ) -> OpenAICompatibleGeneration:
         prompt = build_prompt(
             question=question,
@@ -94,6 +107,7 @@ class OpenAICompatibleClient:
             draft_contexts=draft_contexts or [],
             compiled_context=compiled_context,
             supplementary_context=supplementary_context,
+            action_surfaces_text=action_surfaces_text,
         )
         text = self._chat(
             model=model,
@@ -213,7 +227,7 @@ class OpenAICompatibleClient:
         }
         if response_format:
             payload["response_format"] = response_format
-        response = httpx.post(
+        response = self._post_with_backoff(
             f"{self.base_url}/chat/completions",
             headers=self._headers(),
             json=payload,
@@ -233,8 +247,42 @@ class OpenAICompatibleClient:
         content = message.get("content")
         return content if isinstance(content, str) else ""
 
+    def _post_with_backoff(self, url: str, **kwargs) -> httpx.Response:
+        """POST with exponential backoff on 429 / 5xx responses.
+
+        Respects ``Retry-After`` if upstream sends one; otherwise uses
+        ``1 * 2^attempt`` seconds + jitter, capped at 16 s per retry. After
+        ``_MAX_RETRIES`` failed attempts the last response is returned so
+        the caller can ``raise_for_status()`` and get the original error.
+        """
+        last_response: httpx.Response | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            response = httpx.post(url, **kwargs)
+            if response.status_code not in _RETRYABLE_STATUS_CODES:
+                return response
+            last_response = response
+            if attempt == _MAX_RETRIES:
+                break
+            retry_after = _parse_retry_after(response.headers.get("retry-after"))
+            wait = retry_after if retry_after is not None else min(16.0, (2 ** attempt) + random.random())
+            logger.info(
+                "Upstream returned %d on %s; sleeping %.2fs (attempt %d/%d)",
+                response.status_code, url, wait, attempt + 1, _MAX_RETRIES,
+            )
+            time.sleep(wait)
+        return last_response or httpx.post(url, **kwargs)
+
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None

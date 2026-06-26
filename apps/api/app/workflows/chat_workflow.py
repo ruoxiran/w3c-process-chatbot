@@ -18,8 +18,11 @@ from app.services.openai_compatible import OpenAICompatibleClient
 from app.services.process_state import extract_process_state
 from app.services.live_fetch import fetch_page_excerpt
 from app.services.scope import classify_scope
+from app.services.action_surfaces import format_surfaces_for_prompt, surfaces_for_intent
+from app.services.citation_verifier import verify_citations
 from app.services.provider_override import ProviderOverrideError, build_override_client
 from app.services.query_rewriter import rewrite_query
+from app.services.reranker import rerank_citations
 from app.services.task_planner import build_planned_retrieval_query, plan_task
 from app.services.w3c_api import W3CAPIClient
 
@@ -448,6 +451,42 @@ class ChatWorkflow:
                     ),
                 )
             )
+        # LLM-as-reranker. Take the hybrid-ranked candidates and let the
+        # configured chat LLM reorder them by judged relevance to the user's
+        # actual question. Skipped silently when llm_provider=template (eval
+        # mode) or when the reranker has no working client.
+        if self.settings.llm_provider != "template" and len(citations) >= 4:
+            router_client = (
+                self.openai_compatible_client
+                if self.settings.llm_provider in {"openai", "openai-compatible", "openrouter"}
+                else self.ollama_client
+            )
+            rerank_result = rerank_citations(
+                request.message,
+                citations,
+                settings=self.settings,
+                client=router_client,
+                model=router_model,
+            )
+            if rerank_result.reordered:
+                citations = rerank_result.citations
+                audit["reranker_model"] = rerank_result.model
+                trace.append(
+                    WorkflowStep(
+                        id="reranker",
+                        label="LLM relevance reranker",
+                        status="completed",
+                        detail=(
+                            "Reordered the hybrid retrieval candidates by LLM-judged relevance to "
+                            "the user's question. Hybrid scores remain the tie-breaker; the model "
+                            "cannot drop a citation from the result list."
+                        ),
+                        references=citations,
+                    )
+                )
+            elif rerank_result.skipped_reason:
+                audit["reranker_skipped"] = rerank_result.skipped_reason
+
         process_state = extract_process_state(retrieval_query, citations, resolved_entities)
         evidence_coverage = check_evidence_coverage(
             plan=task_plan,
@@ -599,6 +638,14 @@ class ChatWorkflow:
         # Audit/log names use underscore form for backwards compatibility
         # with existing tests, logs, and eval cases.
         provider_label = generation_provider.replace("-", "_")
+        # Resolve concrete W3C action surfaces (issue trackers, mailing lists,
+        # forms) for this intent so the model can end each step with a
+        # "do X at Y" instruction instead of vague guidance.
+        action_surfaces_text = format_surfaces_for_prompt(
+            surfaces_for_intent(task_plan.intent_type if task_plan else None)
+        )
+        if action_surfaces_text:
+            audit["action_surfaces_intent"] = task_plan.intent_type if task_plan else None
         if generation_client is not None:
             try:
                 generation = generation_client.generate_answer(
@@ -616,6 +663,7 @@ class ChatWorkflow:
                     draft_contexts=draft_contexts,
                     compiled_context=compiled_context,
                     supplementary_context=supplementary_context,
+                    action_surfaces_text=action_surfaces_text,
                 )
                 if generation.text:
                     answer = generation.text
@@ -648,6 +696,49 @@ class ChatWorkflow:
                 references=citations,
             )
         )
+
+        # Post-generation citation verification: for each ``[Sn]`` tag in the
+        # answer, check that the cited excerpt actually supports the
+        # surrounding claim. Strip tags that fail verification — the claim
+        # stays, but it's no longer falsely attributed. Skipped in template
+        # mode (eval), when the answer came from template fallback, or when
+        # no LLM client is available.
+        if (
+            self.settings.llm_provider != "template"
+            and model_generation not in {"template", "template_fallback", "override_rejected"}
+            and citations
+        ):
+            verifier_client = (
+                self.openai_compatible_client
+                if self.settings.llm_provider in {"openai", "openai-compatible", "openrouter"}
+                else self.ollama_client
+            )
+            verification = verify_citations(
+                answer,
+                citations,
+                settings=self.settings,
+                client=verifier_client,
+                model=router_model,
+            )
+            if verification.stripped_pairs:
+                answer = verification.answer
+                audit["citation_verifier"] = {
+                    "model": verification.model,
+                    "stripped_count": len(verification.stripped_pairs),
+                }
+                trace.append(
+                    WorkflowStep(
+                        id="citation_verifier",
+                        label="Citation verifier",
+                        status="completed",
+                        detail=(
+                            f"Stripped {len(verification.stripped_pairs)} citation tag(s) the verifier judged unsupported "
+                            "by their excerpts. The claim text is preserved; only the misleading attribution is removed."
+                        ),
+                    )
+                )
+            elif verification.skipped_reason:
+                audit["citation_verifier_skipped"] = verification.skipped_reason
 
         if classification.injection_risk:
             audit["safety_note"] = "Potential prompt injection detected; answer constrained to trusted sources."
