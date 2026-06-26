@@ -63,15 +63,20 @@ def verify_citations(
     client: JSONGenerator | None,
     model: str | None = None,
 ) -> VerificationResult:
-    """Strip ``[Sn]`` tags that the LLM verifier says aren't supported.
+    """Strip ``[Sn]`` tags that aren't supported by their cited excerpts.
 
-    The verification call returns ``{"pairs": [{"index": N, "supported": bool}, ...]}``.
-    Tags marked ``supported=false`` are stripped from the answer; the
-    claim text stays. ``supported=true`` and any unparseable response
-    leaves the answer alone.
+    Two checks run in order:
+      1. Free, no LLM call: strip ``[Sn]`` whose index is out of range
+         relative to the citation list (e.g. ``[S99]`` when only 7
+         citations exist). The model occasionally invents these and they
+         can't be verified.
+      2. LLM-based: for each in-range ``(claim, [Sn])`` pair, ask the
+         verifier model whether the excerpt actually supports the claim;
+         strip the tags marked unsupported.
+
+    Step 1 always runs (it needs no client). Step 2 is skipped when no
+    client is provided.
     """
-    if client is None:
-        return VerificationResult(answer=answer, stripped_pairs=[], skipped_reason="no_client")
     if not citations:
         return VerificationResult(answer=answer, stripped_pairs=[], skipped_reason="no_citations")
 
@@ -79,24 +84,54 @@ def verify_citations(
     if not pairs:
         return VerificationResult(answer=answer, stripped_pairs=[], skipped_reason="no_pairs")
 
+    # Step 1 — strip out-of-range tags first; this runs unconditionally so
+    # the answer stays clean even when no verifier LLM is configured.
+    n_citations = len(citations)
+    out_of_range_indices = sorted({index for _, index in pairs if index < 1 or index > n_citations})
+    new_answer = answer
+    stripped: list[tuple[str, int]] = []
+    for index in out_of_range_indices:
+        tag = f"[S{index}]"
+        if tag in new_answer:
+            claim = next(
+                (claim for claim, claim_index in pairs if claim_index == index),
+                tag,
+            )
+            stripped.append((claim, index))
+            new_answer = re.sub(r"\s*" + re.escape(tag), "", new_answer)
+
+    in_range_pairs = [(c, i) for c, i in pairs if 1 <= i <= n_citations]
+
+    if client is None:
+        # Step 2 not available; return whatever step 1 produced.
+        if stripped:
+            return VerificationResult(answer=new_answer, stripped_pairs=stripped, skipped_reason="no_client")
+        return VerificationResult(answer=answer, stripped_pairs=[], skipped_reason="no_client")
+
+    if not in_range_pairs:
+        if stripped:
+            return VerificationResult(answer=new_answer, stripped_pairs=stripped, skipped_reason="all_out_of_range")
+        return VerificationResult(answer=answer, stripped_pairs=[], skipped_reason="no_pairs_in_range")
+
     selected_model = model or settings.llm_router_model or settings.llm_model
-    prompt = _prompt(pairs[:_MAX_PAIRS], citations)
+    prompt = _prompt(in_range_pairs[:_MAX_PAIRS], citations)
     try:
         payload = client.generate_json(model=selected_model, prompt=prompt, num_predict=240)
     except Exception as exc:  # pragma: no cover - external service fallback
         logger.warning("Citation verifier LLM call failed; keeping answer as-is", exc_info=exc)
-        return VerificationResult(answer=answer, stripped_pairs=[], skipped_reason=type(exc).__name__, model=selected_model)
+        # Out-of-range strips already done above; still return them.
+        return VerificationResult(answer=new_answer, stripped_pairs=stripped, skipped_reason=type(exc).__name__, model=selected_model)
 
     unsupported = _parse_unsupported(payload)
     if not unsupported:
+        if stripped:
+            return VerificationResult(answer=new_answer, stripped_pairs=stripped, model=selected_model)
         return VerificationResult(answer=answer, stripped_pairs=[], model=selected_model)
 
     # Strip the [Sn] tags marked unsupported. We strip ALL occurrences of
     # the tag in the answer rather than just the one we evaluated — the
     # same wrong citation often appears multiple times in compound answers,
     # and the user would notice if half of them disappeared.
-    new_answer = answer
-    stripped: list[tuple[str, int]] = []
     for index in unsupported:
         tag = f"[S{index}]"
         if tag in new_answer:
