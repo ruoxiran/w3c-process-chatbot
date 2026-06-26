@@ -4,7 +4,7 @@ import re
 import secrets
 from functools import lru_cache
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -331,7 +331,8 @@ def models() -> ModelsResponse:
 
 
 @app.post("/refresh-index")
-async def refresh_index() -> dict[str, object]:
+@limiter.limit(settings.rate_limit_admin)
+async def refresh_index(request: Request) -> dict[str, object]:
     counts = await build_preview_index()
     compiled = compiled_store().rebuild_known()
     return {
@@ -345,7 +346,8 @@ _SHORTNAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,80}$")
 
 
 @app.post("/compiled/rebuild")
-def rebuild_compiled(shortnames: str | None = None) -> dict[str, object]:
+@limiter.limit(settings.rate_limit_admin)
+def rebuild_compiled(request: Request, shortnames: str | None = None) -> dict[str, object]:
     raw = [item.strip() for item in (shortnames or "").split(",") if item.strip()]
     if raw and len(raw) > 50:
         raise HTTPException(status_code=400, detail="too many shortnames; max 50")
@@ -358,7 +360,8 @@ def rebuild_compiled(shortnames: str | None = None) -> dict[str, object]:
 
 
 @app.get("/compiled/status", response_model=CompiledStatusResponse)
-def compiled_status() -> CompiledStatusResponse:
+@limiter.limit(settings.rate_limit_admin)
+def compiled_status(request: Request) -> CompiledStatusResponse:
     return CompiledStatusResponse(enabled=settings.compiled_context_enabled, items=compiled_store().status())
 
 
@@ -375,7 +378,15 @@ def run_eval(request: Request, include_adversarial: bool = False) -> EvalRunResp
 def run_llm_judge_endpoint(
     request: Request,
     include_adversarial: bool = True,
-    judge_model: str | None = None,
+    judge_model: str | None = Query(
+        default=None,
+        # Same constraint as ChatRequest.model — must be a plausible model
+        # identifier, NOT free-form text. Without this, anyone who can hit
+        # /eval/llm-judge can probe model names against the configured
+        # backend or send arbitrary strings through the LLM gateway.
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,80}$",
+        max_length=81,
+    ),
 ) -> LLMJudgeReportResponse:
     """Run the live LLM-backed workflow and score each answer with a judge LLM.
 
@@ -414,5 +425,6 @@ def submit_feedback(request: FeedbackRequest) -> FeedbackResponse:
 
 
 @app.get("/feedback/stats", response_model=FeedbackStatsResponse)
-def feedback_stats() -> FeedbackStatsResponse:
+@limiter.limit(settings.rate_limit_admin)
+def feedback_stats(request: Request) -> FeedbackStatsResponse:
     return FeedbackStatsResponse(**feedback_store().stats())

@@ -70,7 +70,16 @@ class Settings(BaseSettings):
     rate_limit_chat: str = "30/minute"
     rate_limit_eval: str = "3/minute"
     rate_limit_judge: str = "1/minute"
+    rate_limit_admin: str = "5/minute"
     rate_limit_default: str = "120/minute"
+    # Ollama-kind provider overrides allow private IP ranges by design
+    # (so self-hosters can point at their LAN box). That same flexibility
+    # means a hostname can pass validation by resolving to a public IP
+    # at validate-time, then DNS-rebind to a private IP when httpx
+    # actually connects — a classic SSRF gap. For public deployments,
+    # set this to False so Ollama overrides are rejected outright; only
+    # OpenAI-compatible (public-host-only) overrides remain.
+    provider_override_allow_ollama: bool = True
     # When False, the audit blob is stripped from ChatResponse before it leaves
     # the API. Set True only when you want full introspection in the UI.
     expose_audit: bool = False

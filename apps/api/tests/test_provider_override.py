@@ -68,6 +68,22 @@ def test_override_allows_localhost_ollama_in_dev() -> None:
     validate_provider_override(override, _dev_settings())  # no exception
 
 
+def test_override_rejects_ollama_kind_when_disabled() -> None:
+    """Operators on public infra can shut Ollama overrides off entirely
+    to close the residual DNS-rebinding gap."""
+    settings = Settings(
+        app_env="development",
+        llm_provider="template",
+        w3c_api_enabled=False,
+        provider_override_allow_ollama=False,
+    )
+    override = ProviderOverride(
+        kind="ollama", base_url="http://localhost:11434", model="qwen3:8b"
+    )
+    with pytest.raises(ProviderOverrideError, match="ollama .* disabled"):
+        validate_provider_override(override, settings)
+
+
 def test_override_requires_https_in_production() -> None:
     override = ProviderOverride(
         kind="openai-compatible",

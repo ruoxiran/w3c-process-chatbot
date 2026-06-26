@@ -31,6 +31,30 @@ class MissingDependencyError(RuntimeError):
     """Raised when sentence-transformers / torch isn't installed."""
 
 
+# Reranker models we've vetted for use. Cross-encoder loading via
+# sentence-transformers will reach out to HuggingFace and download
+# *whatever repo id is passed*, and PyTorch's ``.bin`` loader has a
+# known unpickle-code-execution risk. So we refuse any model id not on
+# this list — operators who want to add a model must opt-in by editing
+# this constant rather than just flipping an env var.
+_ALLOWED_RERANKER_MODELS: frozenset[str] = frozenset({
+    "BAAI/bge-reranker-v2-m3",
+    "BAAI/bge-reranker-base",
+    "BAAI/bge-reranker-large",
+    "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "cross-encoder/ms-marco-MiniLM-L-12-v2",
+})
+
+
+def _validate_model_name(model_name: str) -> None:
+    if model_name not in _ALLOWED_RERANKER_MODELS:
+        raise MissingDependencyError(
+            f"reranker model {model_name!r} is not in the allowlist; "
+            "add it to _ALLOWED_RERANKER_MODELS in cross_encoder_reranker.py "
+            "after verifying it's a trusted source"
+        )
+
+
 @dataclass(frozen=True)
 class CrossEncoderRerankResult:
     citations: list[Citation]
@@ -65,6 +89,8 @@ def _load_model(model_name: str) -> object:
         return _model_cache
     if _load_error is not None:
         raise MissingDependencyError(str(_load_error))
+
+    _validate_model_name(model_name)
 
     with _model_lock:
         if _model_cache is not None and _model_name_loaded == model_name:

@@ -281,10 +281,18 @@ class OpenAICompatibleClient:
         return headers
 
 
+_RETRY_AFTER_MAX_SECONDS = 60.0
+
+
 def _parse_retry_after(value: str | None) -> float | None:
     if not value:
         return None
     try:
-        return max(0.0, float(value))
+        parsed = float(value)
     except ValueError:
         return None
+    # Cap at 60 s so a hostile upstream can't pin a worker thread to sleep
+    # for hours via a giant ``Retry-After`` header. Real provider 429s
+    # almost never exceed this; if they do we'd rather fail fast and let
+    # the caller decide than block the request queue.
+    return min(max(0.0, parsed), _RETRY_AFTER_MAX_SECONDS)

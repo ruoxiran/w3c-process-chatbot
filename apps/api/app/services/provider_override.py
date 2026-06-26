@@ -67,7 +67,16 @@ def validate_provider_override(override: ProviderOverride, settings: Settings) -
         ranges / .internal / .local are rejected.
       - ollama: loopback / private ranges are allowed (self-hosters), but
         cloud-metadata-style link-local and .internal suffixes still rejected.
+        Operators on public infra should set
+        ``provider_override_allow_ollama=False`` to reject this kind entirely
+        and close the residual DNS-rebinding gap (validate-time DNS lookup
+        cannot prevent a hostname rebinding to a private IP at connect time).
     """
+    if override.kind == "ollama" and not settings.provider_override_allow_ollama:
+        raise ProviderOverrideError(
+            "ollama provider overrides are disabled on this deployment; "
+            "use an openai-compatible endpoint instead"
+        )
     parsed = urlparse(str(override.base_url))
     if parsed.scheme not in {"http", "https"}:
         raise ProviderOverrideError("base_url must use http or https")

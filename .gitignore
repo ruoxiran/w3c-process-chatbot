@@ -25,3 +25,4 @@ reports/
 .playwright-cli/
 
 .env.bak
+logs/
