@@ -121,6 +121,24 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+def _warm_retriever_caches() -> None:
+    """Load the corpus index and (when enabled) the dense-embedding cache at
+    startup so the first user request doesn't pay the 5-10 second cold-load.
+
+    Each load is idempotent under the retriever's double-checked locking, so
+    this is safe even if reload picks up a corpus refresh later.
+    """
+    try:
+        retriever = _workflow_singleton().retriever
+        retriever._load_index()  # noqa: SLF001 — intentional pre-warm
+        if settings.retrieval_dense_enabled:
+            retriever._load_dense_cache()  # noqa: SLF001 — intentional pre-warm
+        logger.info("retriever caches pre-warmed at startup")
+    except Exception as exc:  # pragma: no cover - startup best effort
+        logger.warning("retriever pre-warm failed; first request will pay the cost", exc_info=exc)
+
+
 @lru_cache
 def _workflow_singleton() -> ChatWorkflow:
     """Long-lived workflow instance so retriever/W3C API caches survive across requests."""

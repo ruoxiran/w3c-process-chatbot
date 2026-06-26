@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+import numpy as np
+
 from app.core.config import Settings, get_settings
 from app.core.paths import resolve_data_path
 from app.models.schemas import Citation, SourceType
@@ -69,6 +71,9 @@ class CorpusIndex:
 @dataclass(frozen=True)
 class DenseEmbeddingCache:
     vectors: dict[str, list[float]]
+    matrix: np.ndarray  # (n_chunks, dim) — L2-normalised row vectors
+    chunk_ids: tuple[str, ...]  # row i corresponds to chunk_ids[i]
+    chunk_to_row: dict[str, int]
     model: str
     mtime: float
 
@@ -139,13 +144,28 @@ class Retriever:
 
         query_vector = _tfidf_vector(Counter(_tokenize(query)), index.document_frequency, len(index.records))
         dense_cache = self._load_dense_cache() if self.settings.retrieval_dense_enabled else None
-        dense_query = self._query_embedding(query) if dense_cache and dense_cache.vectors else None
+        # Embed the user's original message, not the augmented query. The
+        # augmented query has 10+ lines of task-planner / router metadata
+        # whose vector dilutes the semantic signal of "what did the user
+        # actually ask".
+        dense_query = self._query_embedding(user_message) if dense_cache and dense_cache.vectors else None
+        # Vectorise the dense cosine: one (n, d) @ (d,) multiply instead of
+        # n pure-Python dot products. Cuts dense retrieval from ~20s to <50ms.
+        dense_scores: np.ndarray | None = None
+        if dense_query and dense_cache and dense_cache.matrix.size:
+            qv = np.asarray(dense_query, dtype=np.float32)
+            qn = float(np.linalg.norm(qv))
+            if qn:
+                qv = qv / qn
+                dense_scores = np.maximum(dense_cache.matrix @ qv, 0.0)
         candidates: list[tuple[float, CorpusRecord, dict[str, float]]] = []
         for record in index.records:
             bm25 = _bm25_score(query_terms, record, index)
             dense = 0.0
-            if dense_query and dense_cache:
-                dense = _dense_cosine(dense_query, dense_cache.vectors.get(_hit_id(record.chunk)))
+            if dense_scores is not None:
+                row = dense_cache.chunk_to_row.get(_hit_id(record.chunk))
+                if row is not None:
+                    dense = float(dense_scores[row])
             # BM25=0 implies semantic=0 (identical vocabulary), so skip both when neither scores
             if bm25 <= 0 and dense <= 0:
                 continue
@@ -248,7 +268,28 @@ class Retriever:
                         vectors[chunk_id] = values
             if model and model != self.embedding_model:
                 return None
-            self._dense_cache = DenseEmbeddingCache(vectors=vectors, model=model or self.embedding_model, mtime=mtime)
+            # Build a stacked numpy matrix of L2-normalised vectors so the
+            # per-query cosine scoring is a single matrix-vector multiply
+            # instead of 5879 pure-Python dot products.
+            chunk_ids = tuple(vectors.keys())
+            if chunk_ids:
+                matrix = np.asarray(
+                    [vectors[chunk_id] for chunk_id in chunk_ids], dtype=np.float32
+                )
+                norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+                norms[norms == 0] = 1.0
+                matrix = matrix / norms
+            else:
+                matrix = np.zeros((0, 0), dtype=np.float32)
+            chunk_to_row = {cid: i for i, cid in enumerate(chunk_ids)}
+            self._dense_cache = DenseEmbeddingCache(
+                vectors=vectors,
+                matrix=matrix,
+                chunk_ids=chunk_ids,
+                chunk_to_row=chunk_to_row,
+                model=model or self.embedding_model,
+                mtime=mtime,
+            )
             return self._dense_cache
 
     def _load_index(self) -> CorpusIndex:

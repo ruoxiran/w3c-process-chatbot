@@ -81,22 +81,26 @@ def _compact_context(message: str, history: list[ChatTurn]) -> str:
     return f"{recent} {message}" if recent else message
 
 
+_VALID_INTENT_TYPES = frozenset({
+    "advance_specification",
+    "horizontal_review",
+    "charter_or_recharter",
+    "coordinate_with_staff_contact",
+    "run_group_process",
+    "transfer_incubation_to_wg",
+    "check_patent_policy",
+    "handle_objection_or_appeal",
+    "explain_process",
+})
+
+
 def _intent_type(text: str) -> str:
-    explicit = re.search(r"\bintent_type=([a-z_]+)\b", text)
-    if explicit:
-        value = explicit.group(1)
-        if value in {
-            "advance_specification",
-            "horizontal_review",
-            "charter_or_recharter",
-            "coordinate_with_staff_contact",
-            "run_group_process",
-            "transfer_incubation_to_wg",
-            "check_patent_policy",
-            "handle_objection_or_appeal",
-            "explain_process",
-        }:
-            return value
+    # Keyword rules run BEFORE deferring to a router-supplied intent_type. A
+    # specific keyword match ("horizontal review", "patent exclusion",
+    # "formal objection") is a strong signal that the question is really
+    # about that topic; the LLM router's broad ``intent_type=explain_process``
+    # label, which it emits frequently for any ambiguous question, would
+    # otherwise override these correct keyword classifications.
     if _has(text, ["formal objection", "appeal", "异议", "申诉"]):
         return "handle_objection_or_appeal"
     if _has(text, ["patent", "ipr", "exclusion opportunity", "专利"]):
@@ -144,6 +148,15 @@ def _intent_type(text: str) -> str:
         ],
     ):
         return "advance_specification"
+    # No keyword rule fired. Defer to the router's ``intent_type=...`` label
+    # if it produced something other than the catch-all ``explain_process``
+    # — the router has more context than the keyword table for unusual
+    # phrasings. Otherwise return the catch-all.
+    explicit = re.search(r"\bintent_type=([a-z_]+)\b", text)
+    if explicit:
+        value = explicit.group(1)
+        if value in _VALID_INTENT_TYPES and value != "explain_process":
+            return value
     return "explain_process"
 
 

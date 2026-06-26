@@ -23,3 +23,5 @@ apps/api/data/
 reports/
 .claude/
 .playwright-cli/
+
+.env.bak
