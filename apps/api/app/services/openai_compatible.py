@@ -143,6 +143,7 @@ class OpenAICompatibleClient:
         draft_contexts: list[DraftContext] | None = None,
         compiled_context: CompiledContext | None = None,
         supplementary_context: str | None = None,
+        action_surfaces_text: str = "",
     ) -> Iterator[str]:
         """Yield raw text deltas from the chat completions streaming API.
 
@@ -163,6 +164,7 @@ class OpenAICompatibleClient:
             draft_contexts=draft_contexts or [],
             compiled_context=compiled_context,
             supplementary_context=supplementary_context,
+            action_surfaces_text=action_surfaces_text,
         )
         payload: dict[str, object] = {
             "model": model,

@@ -1,11 +1,13 @@
 import logging
 import re
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TypedDict
 
 from app.core.config import Settings
-from app.models.schemas import ChatRequest, ChatResponse, ClassifyResponse, Citation, CompiledContext, DraftContext, LLMRouterDecision, SourceVersion, TaskPlan, W3CEntity, WorkflowStep
+from app.models.schemas import ChatRequest, ChatResponse, ClassifyResponse, Citation, CompiledContext, DraftContext, LLMRouterDecision, NextStep, ProcessState, EvidenceCoverage, SourceVersion, TaskPlan, W3CEntity, WorkflowStep
 from app.rag.retriever import Retriever
 from app.services.answering import build_grounded_answer, build_next_step_details, build_refusal
 from app.services.compiled_context import CompiledContextStore
@@ -34,6 +36,45 @@ class ChatState(TypedDict, total=False):
     request: ChatRequest
     classification: ClassifyResponse
     response: ChatResponse
+
+
+@dataclass
+class _PreparedAnswer:
+    """All workflow state produced before the final LLM generation call.
+
+    The pre-LLM phase of the workflow is identical for sync (``run``) and
+    streaming (``run_stream``) paths — both consume one of these. The two
+    methods only diverge in HOW they invoke the LLM (a single
+    ``generate_answer`` blocking call vs an iterator of token deltas).
+
+    Keeping this state in one bag means the assembly phase (workflow trace
+    tail + ``ChatResponse`` construction) is also single-source.
+    """
+
+    request: ChatRequest
+    classification: ClassifyResponse
+    citations: list[Citation]
+    next_steps: list[str]
+    next_step_details: list[NextStep]
+    trace: list[WorkflowStep]
+    audit: dict
+    source_version: SourceVersion
+    task_plan: TaskPlan | None
+    evidence_coverage: EvidenceCoverage | None
+    process_state: ProcessState | None
+    compiled_context: CompiledContext | None
+    resolved_entities: list[W3CEntity]
+    draft_contexts: list[DraftContext]
+    supplementary_context: str | None
+    template_answer: str
+    selected_model: str
+    generation_provider: str
+    provider_label: str
+    generation_client: object | None
+    safe_history: list
+    action_surfaces_text: str
+    initial_model_generation: str
+    router_model: str
 
 
 class ChatWorkflow:
@@ -91,7 +132,23 @@ class ChatWorkflow:
             confidence=decision.confidence,
         )
 
-    def run(self, request: ChatRequest) -> ChatResponse:
+    def run(
+        self,
+        request: ChatRequest,
+        *,
+        stream_sink: object | None = None,
+    ) -> ChatResponse:
+        """Execute the full workflow and return the assembled ChatResponse.
+
+        When ``stream_sink`` is provided AND the resolved LLM client supports
+        token streaming, the workflow uses the streaming generation path and
+        invokes ``stream_sink(delta)`` for each text chunk as it arrives.
+        ``stream_sink`` may be any callable; the typical caller is
+        ``run_stream`` which pipes deltas through a queue to its SSE
+        consumer. When ``stream_sink`` is ``None`` the workflow uses the
+        original blocking ``generate_answer`` path.
+        """
+
         contextual_query = build_contextual_query(request.message, request.history)
         used_contextual_query = contextual_query != request.message
         classification = self.classify(request)
@@ -647,31 +704,58 @@ class ChatWorkflow:
         if action_surfaces_text:
             audit["action_surfaces_intent"] = task_plan.intent_type if task_plan else None
         if generation_client is not None:
+            generation_kwargs = dict(
+                model=selected_model,
+                question=request.message,
+                locale=request.locale,
+                citations=citations,
+                fallback_answer=answer,
+                fallback_next_steps=next_steps,
+                history=safe_history,
+                entities=resolved_entities,
+                task_plan=task_plan,
+                process_state=process_state,
+                evidence_coverage=evidence_coverage,
+                draft_contexts=draft_contexts,
+                compiled_context=compiled_context,
+                supplementary_context=supplementary_context,
+                action_surfaces_text=action_surfaces_text,
+            )
+            stream_supported = stream_sink is not None and hasattr(generation_client, "stream_answer")
             try:
-                generation = generation_client.generate_answer(
-                    model=selected_model,
-                    question=request.message,
-                    locale=request.locale,
-                    citations=citations,
-                    fallback_answer=answer,
-                    fallback_next_steps=next_steps,
-                    history=safe_history,
-                    entities=resolved_entities,
-                    task_plan=task_plan,
-                    process_state=process_state,
-                    evidence_coverage=evidence_coverage,
-                    draft_contexts=draft_contexts,
-                    compiled_context=compiled_context,
-                    supplementary_context=supplementary_context,
-                    action_surfaces_text=action_surfaces_text,
-                )
-                if generation.text:
-                    answer = generation.text
-                    model_generation = provider_label
-                    audit["model_generation"] = model_generation
+                if stream_supported:
+                    # Real-token streaming path. Each delta is forwarded to
+                    # the sink as it arrives; the assembled answer is the
+                    # concatenation cleaned with the same harness post-
+                    # processing as the sync path.
+                    from app.services.ollama import _clean_model_text  # local to avoid moving import to top
+
+                    chunks: list[str] = []
+                    for delta in generation_client.stream_answer(**generation_kwargs):
+                        if delta:
+                            chunks.append(delta)
+                            try:
+                                stream_sink(delta)
+                            except Exception:  # pragma: no cover - sink misbehaviour
+                                logger.warning("stream_sink raised; continuing without forwarding deltas")
+                                stream_sink = None  # type: ignore[assignment]
+                    streamed_text = _clean_model_text("".join(chunks))
+                    if streamed_text:
+                        answer = streamed_text
+                        model_generation = f"{provider_label}_stream"
+                        audit["model_generation"] = model_generation
+                    else:
+                        model_generation = f"{provider_label}_stream_empty_fallback"
+                        audit["model_generation"] = model_generation
                 else:
-                    model_generation = f"{provider_label}_empty_fallback"
-                    audit["model_generation"] = model_generation
+                    generation = generation_client.generate_answer(**generation_kwargs)
+                    if generation.text:
+                        answer = generation.text
+                        model_generation = provider_label
+                        audit["model_generation"] = model_generation
+                    else:
+                        model_generation = f"{provider_label}_empty_fallback"
+                        audit["model_generation"] = model_generation
             except Exception as exc:  # pragma: no cover - external service fallback
                 model_generation = "template_fallback"
                 audit["model_generation"] = model_generation
@@ -751,6 +835,43 @@ class ChatWorkflow:
                 )
             )
 
+        return self._finalize_in_scope_response(
+            answer=answer,
+            citations=citations,
+            next_steps=next_steps,
+            next_step_details=next_step_details,
+            task_plan=task_plan,
+            evidence_coverage=evidence_coverage,
+            process_state=process_state,
+            compiled_context=compiled_context,
+            resolved_entities=resolved_entities,
+            draft_contexts=draft_contexts,
+            source_version=source_version,
+            trace=trace,
+            audit=audit,
+        )
+
+    def _finalize_in_scope_response(
+        self,
+        *,
+        answer: str,
+        citations: list[Citation],
+        next_steps: list[str],
+        next_step_details: list[NextStep],
+        task_plan: TaskPlan | None,
+        evidence_coverage: EvidenceCoverage | None,
+        process_state: ProcessState | None,
+        compiled_context: CompiledContext | None,
+        resolved_entities: list[W3CEntity],
+        draft_contexts: list[DraftContext],
+        source_version: SourceVersion,
+        trace: list[WorkflowStep],
+        audit: dict,
+    ) -> ChatResponse:
+        """Append the citation_check + final_response trace steps and return
+        the assembled ChatResponse. Used by both sync ``run`` and the
+        upcoming ``run_stream`` paths so the final shape is identical.
+        """
         trace.extend(
             [
                 WorkflowStep(
@@ -769,7 +890,6 @@ class ChatWorkflow:
                 ),
             ]
         )
-
         return ChatResponse(
             answer=answer,
             in_scope=True,
@@ -788,6 +908,62 @@ class ChatWorkflow:
             workflow_trace=trace,
             audit=audit,
         )
+
+    def run_stream(self, request: ChatRequest) -> Iterator[dict]:
+        """Generator that yields workflow events for SSE streaming.
+
+        Event shapes:
+          - ``{"type": "delta", "text": <str>}`` — one LLM token chunk
+          - ``{"type": "response", "response": ChatResponse}`` — final answer
+          - ``{"type": "error", "message": <str>}`` — runner crashed
+
+        The actual workflow runs in a worker thread, with ``run`` configured
+        to feed each LLM token delta into a ``queue.Queue``. This generator
+        drains the queue, yielding ``delta`` events as they arrive, and
+        finally yields ``response`` once the worker thread completes.
+
+        End-to-end time isn't reduced — the pre-LLM phase still blocks on
+        retrieval / W3C API / GitHub calls — but the user sees the answer
+        text appear progressively from the moment the LLM starts producing
+        tokens, rather than waiting for the full ``generate_answer`` round
+        trip.
+        """
+        import queue
+        import threading
+
+        sentinel = object()
+        delta_queue: "queue.Queue[object]" = queue.Queue()
+        result_holder: dict[str, ChatResponse | BaseException] = {}
+
+        def push_delta(delta: str) -> None:
+            delta_queue.put(delta)
+
+        def worker() -> None:
+            try:
+                response = self.run(request, stream_sink=push_delta)
+                result_holder["response"] = response
+            except BaseException as exc:  # pragma: no cover - propagated to caller
+                result_holder["error"] = exc
+            finally:
+                delta_queue.put(sentinel)
+
+        thread = threading.Thread(target=worker, name="chat-workflow-stream", daemon=True)
+        thread.start()
+
+        while True:
+            item = delta_queue.get()
+            if item is sentinel:
+                break
+            yield {"type": "delta", "text": str(item)}
+        thread.join()
+
+        if "error" in result_holder:
+            yield {"type": "error", "message": str(result_holder["error"])}
+            return
+
+        response = result_holder.get("response")
+        if response is not None:
+            yield {"type": "response", "response": response}
 
 
 _ENGLISH_STOPWORDS = frozenset({

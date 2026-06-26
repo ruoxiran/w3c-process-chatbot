@@ -202,46 +202,43 @@ def _sse_event(event_type: str, payload: object) -> bytes:
 
 
 def _stream_chat_events(wf: ChatWorkflow, body: ChatRequest, expose_audit: bool):
-    """Yield SSE events for a single chat request.
+    """Yield SSE events for a single chat request via real token streaming.
 
-    Current implementation is a pragmatic first iteration: the workflow runs
-    end-to-end synchronously, then we emit a ``meta`` event with everything
-    EXCEPT the answer body, followed by a stream of ``delta`` events that
-    chunk the answer text into ~3-5 word groups for a "typing" feel, then a
-    final ``done`` event with the full ``ChatResponse``.
+    The workflow runs in a worker thread; this generator drains its delta
+    queue and forwards each LLM token chunk as a ``delta`` SSE event as it
+    arrives. Once the worker thread finishes, the final ``ChatResponse`` is
+    emitted as a ``meta`` event (everything except the answer body) followed
+    by a ``done`` event with the full answer text.
 
-    This does not reduce time-to-first-byte vs the non-streaming endpoint
-    — that requires refactoring ``ChatWorkflow.run()`` so retrieval and the
-    LLM call can interleave with SSE emission. It DOES let the UI populate
-    the workflow inspector, sources panel, and feedback widget the moment
-    the response arrives, instead of waiting for the answer to render. The
-    real-token streaming will land in a follow-up that refactors run().
+    The pre-LLM phase (retrieval, entity resolution, etc.) still blocks
+    before the first token arrives — but the moment the LLM starts
+    producing text, the user sees it. ``meta`` lands at the end with the
+    fully-populated workflow trace so the inspector renders in one shot.
     """
-    response = wf.run(body)
-    response = _strip_audit_if_disabled(response) if not expose_audit else response
+    final_response: ChatResponse | None = None
+    error_message: str | None = None
+    for event in wf.run_stream(body):
+        if event["type"] == "delta":
+            yield _sse_event("delta", {"text": event["text"]})
+        elif event["type"] == "response":
+            final_response = event["response"]
+        elif event["type"] == "error":
+            error_message = event.get("message") or "workflow failed"
+            break
 
-    # meta first: every field except ``answer``. The frontend can populate
-    # the workflow inspector immediately.
-    meta = response.model_dump(mode="json")
+    if error_message is not None or final_response is None:
+        yield _sse_event(
+            "error",
+            {"message": error_message or "workflow ended without a response"},
+        )
+        return
+
+    payload_response = (
+        final_response if expose_audit else _strip_audit_if_disabled(final_response)
+    )
+    meta = payload_response.model_dump(mode="json")
     answer_text = meta.pop("answer", "") or ""
     yield _sse_event("meta", meta)
-
-    # chunk by whitespace so the typing effect is at a natural cadence.
-    # Joined-output equals the original answer exactly.
-    cursor = 0
-    while cursor < len(answer_text):
-        # Take the next ~24 chars, rounded to the next whitespace so we
-        # never split a word in the middle.
-        chunk_end = min(cursor + 24, len(answer_text))
-        if chunk_end < len(answer_text):
-            next_space = answer_text.find(" ", chunk_end)
-            if next_space != -1 and next_space - chunk_end < 32:
-                chunk_end = next_space + 1
-        delta = answer_text[cursor:chunk_end]
-        if delta:
-            yield _sse_event("delta", {"text": delta})
-        cursor = chunk_end
-
     yield _sse_event("done", {"answer": answer_text})
 
 

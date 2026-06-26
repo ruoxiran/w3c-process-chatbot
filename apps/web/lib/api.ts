@@ -341,28 +341,33 @@ export async function sendChatStream(
   let buffer = "";
   let meta: Omit<ChatResponse, "answer"> | null = null;
   let accumulated = "";
+  let errorMessage: string | null = null;
 
+  // Real-token streaming event ordering: ``delta`` events arrive first as
+  // the LLM produces tokens, then a single ``meta`` event with the
+  // workflow trace, then ``done``. The frontend updates the message bubble
+  // text via ``onChunk`` during the delta phase and populates the
+  // inspector via ``onMeta`` once it lands.
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    // Split on SSE event boundaries (\n\n).
     let boundary = buffer.indexOf("\n\n");
     while (boundary !== -1) {
       const raw = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
       const parsed = parseSseEvent(raw);
       if (parsed) {
-        if (parsed.event === "meta") {
-          meta = parsed.data as Omit<ChatResponse, "answer">;
-          callbacks.onMeta(meta);
-        } else if (parsed.event === "delta") {
+        if (parsed.event === "delta") {
           const delta = (parsed.data as { text?: string }).text ?? "";
           accumulated += delta;
           callbacks.onChunk(accumulated, delta);
+        } else if (parsed.event === "meta") {
+          meta = parsed.data as Omit<ChatResponse, "answer">;
+          callbacks.onMeta(meta);
+        } else if (parsed.event === "error") {
+          errorMessage = (parsed.data as { message?: string }).message ?? "stream error";
         } else if (parsed.event === "done") {
-          // We've collected everything; flush the remaining buffer (if any)
-          // and return the assembled ChatResponse below.
           buffer = "";
           boundary = -1;
           continue;
@@ -372,6 +377,9 @@ export async function sendChatStream(
     }
   }
 
+  if (errorMessage !== null) {
+    throw new Error(errorMessage);
+  }
   if (!meta) {
     throw new Error("Chat stream ended without a meta event");
   }
