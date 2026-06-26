@@ -10,7 +10,6 @@ class Settings(BaseSettings):
     app_env: str = "development"
     database_url: str = "postgresql://w3c:w3c@localhost:5432/w3c_process"
     redis_url: str = "redis://localhost:6379/0"
-    qdrant_url: str = "http://localhost:6333"
     llm_base_url: str = "http://localhost:8001/v1"
     llm_provider: str = "ollama"
     llm_model: str = "qwen3:8b"
