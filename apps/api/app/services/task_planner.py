@@ -117,6 +117,31 @@ def _intent_type(text: str) -> str:
         return "horizontal_review"
     if _has(text, ["charter", "recharter", "active charter", "章程"]):
         return "charter_or_recharter"
+    # Stage-transition signals (CR/PR/REC + "transition") should be
+    # classified as ``advance_specification`` BEFORE the broader "review"
+    # keyword catches "wide review needed?" as a plain review-planning
+    # question. The user's real intent in "我们的 spec 在 CR，下一步
+    # transition to PR 需要 wide review 吗?" is advancing the spec, with
+    # review as a sub-question.
+    #
+    # Stage terms must be SPECIFIC enough to not collide with neutral words.
+    # E.g. " pr" alone would match "Working Group p[rocess]"; "to pr" or
+    # "in cr" requires the user to be talking about the maturity stage
+    # explicitly.
+    has_transition_verb = _has(text, ["transition", "transitioning", "推进", "转换"])
+    has_stage_term = _has(
+        text,
+        [
+            "in cr", "at cr", "to cr", "from cr", "cr to ", "cr snapshot", "cr draft",
+            "in pr", "at pr", "to pr", "from pr", "pr to ",
+            "to rec", "rec snapshot", "rec track", "recommendation track",
+            "fpwd", "first public working draft",
+            "candidate recommendation", "proposed recommendation",
+            "候选推荐", "推荐标准",
+        ],
+    )
+    if has_transition_verb and has_stage_term:
+        return "advance_specification"
     if _has(text, ["wide review", "review", "审查"]):
         return "plan_or_complete_review"
     if _has(text, ["staff contact", "team contact", "liaison", "职责"]):

@@ -20,7 +20,13 @@ def test_workflow_returns_citations_for_process_question() -> None:
     assert response.in_scope
     assert response.citations
     assert response.next_steps
-    assert [step.id for step in response.workflow_trace] == [
+    # Allow the reranker step to be present or absent: the cross-encoder
+    # reranker only fires when sentence-transformers is installed AND the
+    # query produces at least 4 candidates. We assert the load-bearing
+    # invariants instead of the exact list, so the test passes in both the
+    # vanilla-deps environment and the cross-encoder-enabled one.
+    step_ids = [step.id for step in response.workflow_trace]
+    must_have = [
         "scope_classifier",
         "task_planner",
         "w3c_api_resolver",
@@ -33,6 +39,10 @@ def test_workflow_returns_citations_for_process_question() -> None:
         "citation_check",
         "final_response",
     ]
+    for required in must_have:
+        assert required in step_ids, f"missing workflow step: {required}"
+    # Final conclusion stays last regardless of optional reranker.
+    assert step_ids[-1] == "final_response"
     assert response.process_state
     assert response.task_plan
     assert response.evidence_coverage

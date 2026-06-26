@@ -36,10 +36,25 @@ def test_strong_keyword_match_returns_high_confidence() -> None:
 
 
 def test_weak_keyword_match_returns_lower_confidence() -> None:
-    # "w3c" alone matches but none of the strong-signal keywords
-    decision = classify_scope("Tell me a joke about w3c")
+    # "w3c" alone matches but none of the strong-signal keywords. The
+    # message is also free of frivolous patterns so it stays in-scope
+    # (and weak), which is what the layer-3 LLM router exists to validate.
+    decision = classify_scope("What does w3c require here?")
     assert decision.in_scope
     assert decision.confidence < 0.9
+
+
+def test_frivolous_w3c_mention_is_out_of_scope() -> None:
+    # Asking for a joke / history trivia / cooking analogy that name-drops
+    # W3C is not a Process question. The frivolous-pattern detector
+    # overrides the weak keyword match.
+    for message in [
+        "Tell me a joke about w3c",
+        "When was the W3C founded?",
+        "Give me a cooking process recipe that uses w3c ingredients.",
+    ]:
+        decision = classify_scope(message)
+        assert not decision.in_scope, f"{message!r} should be out of scope"
 
 
 def test_out_of_scope_returns_zero_confidence() -> None:

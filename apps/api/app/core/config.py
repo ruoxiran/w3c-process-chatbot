@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-m3"
     ollama_embedding_model: str = "qwen3-embedding:4b"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    # Cross-encoder reranker takes priority over the LLM-as-reranker when
+    # enabled. The dependency (sentence-transformers + torch + ~600MB model
+    # download on first use) is optional; if loading fails the workflow
+    # silently falls back to the LLM reranker.
+    reranker_cross_encoder_enabled: bool = True
     source_allowlist: str = Field(
         default="w3.org,api.w3.org,github.com/w3c,github.com/w3ctag,github.com/w3cping,w3c.github.io,w3ctag.github.io"
     )

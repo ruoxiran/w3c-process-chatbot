@@ -9,3 +9,8 @@ pytest==8.3.4
 redis==5.2.1
 slowapi==0.1.9
 uvicorn[standard]==0.34.0
+
+# Optional cross-encoder reranker. ~600 MB model on first load; without
+# these the workflow falls back to the LLM-as-reranker silently.
+sentence-transformers>=3.0,<5
+torch>=2.0,<3

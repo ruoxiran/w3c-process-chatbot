@@ -70,6 +70,45 @@ PROCESS_TOPICS = {
     "events": ["workshop", "workshops", "tpac", "ac meeting", "advisory committee meeting", "breakout", "研讨会"],
 }
 
+# Patterns where the user mentions W3C but is clearly NOT asking about
+# Process workflow. Weak ``w3c`` keyword matches alone shouldn't make these
+# in-scope; this list catches the obvious cases (jokes, trivia, analogies)
+# without depending on the LLM router being available.
+FRIVOLOUS_PATTERNS = (
+    "joke about",
+    "tell me a joke",
+    "knock knock",
+    "笑话",
+    "幽默",
+    "cooking recipe",
+    "cooking process recipe",
+    "as a cooking",
+    "as a recipe",
+    "explain like i'm 5",
+    "explain like i am 5",
+    "eli5",
+    "in the style of",
+    "in style of",
+    "when was the w3c founded",
+    "when was w3c founded",
+    "history of w3c",
+    "history of the w3c",
+    "who founded w3c",
+    "who founded the w3c",
+    "w3c trivia",
+)
+
+
+def detect_frivolous(text: str) -> bool:
+    """True when the message looks like W3C-name-dropping without a real
+    Process question. Used to override weak keyword matches that would
+    otherwise let "Tell me a joke about W3C" or "When was W3C founded?"
+    leak past the scope gate.
+    """
+    normalized = _normalize_for_injection_scan(text)
+    return any(pattern in normalized for pattern in FRIVOLOUS_PATTERNS)
+
+
 INJECTION_PATTERNS = [
     "ignore previous",
     "ignore your",
@@ -130,5 +169,21 @@ def classify_scope(message: str, *, history_text: str = "") -> ScopeDecision:
         return ScopeDecision(False, "Question is outside the W3C Process assistant scope.", [], injection_risk, confidence=0.0)
 
     has_strong_match = any(kw in text for kw in STRONG_TOPIC_KEYWORDS)
+
+    # Frivolous override: questions that mention W3C but are clearly trivia,
+    # humour, or analogy ("joke about w3c", "history of W3C", "explain as
+    # a cooking recipe") should be rejected even if a keyword matched.
+    # Apply this for BOTH weak and strong matches because terms like "rec"
+    # substring-match "recipe" and "process" matches "cooking process",
+    # which would otherwise force a strong-confidence in-scope verdict.
+    if detect_frivolous(message):
+        return ScopeDecision(
+            in_scope=False,
+            reason="Question mentions W3C but is trivia / humour / analogy, not a Process workflow question.",
+            matched_topics=matched,
+            injection_risk=injection_risk,
+            confidence=0.0,
+        )
+
     confidence = 0.9 if has_strong_match else 0.5
     return ScopeDecision(True, "Question matches W3C Process, Guidebook, or standards workflow topics.", matched, injection_risk, confidence=confidence)

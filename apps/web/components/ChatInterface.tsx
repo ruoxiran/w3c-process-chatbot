@@ -24,7 +24,8 @@ import {
   type ChatTurn,
   type FeedbackRating,
   type ModelInfo,
-  type W3CEntity
+  type W3CEntity,
+  type WorkflowStep
 } from "@/lib/api";
 
 const starterQuestions = [
@@ -130,19 +131,49 @@ export function ChatInterface() {
     try {
       const override = providerConfig ? configToOverride(providerConfig) : undefined;
       // Streaming path: update the bubble + inspector progressively as the
-      // server emits meta then delta chunks. The first ``meta`` carries the
-      // workflow trace and citations so the right panel populates immediately;
-      // the chunks fill in the answer text with a typing effect.
+      // Streaming flow: server emits pre-LLM ``stage`` events as each
+      // workflow node completes (so the inspector populates progressively),
+      // then ``delta`` events with each LLM token chunk, then a final
+      // ``meta`` event with the assembled response.
+      const partialTrace: WorkflowStep[] = [];
       const result = await sendChatStream(
         trimmed,
         {
+          onStage: (step) => {
+            partialTrace.push(step);
+            // Build a temporary ChatResponse that has just the trace so far;
+            // it lets WorkflowPanel render each step as it lands without
+            // waiting for the full meta event.
+            const partial = {
+              answer: "",
+              in_scope: true,
+              citations: [],
+              next_steps: [],
+              next_step_details: [],
+              compiled_context_used: false,
+              resolved_entities: [],
+              draft_contexts: [],
+              confidence: 0,
+              source_version: {},
+              workflow_trace: [...partialTrace],
+              audit: {},
+            } as unknown as ChatResponse;
+            setSelectedResponse(partial);
+            setMessages((current) =>
+              current.map((item) =>
+                item.id === pendingMessage.id
+                  ? { ...item, response: partial, status: undefined }
+                  : item
+              )
+            );
+          },
           onMeta: (meta) => {
             const partial = { ...meta, answer: "" } as ChatResponse;
             setSelectedResponse(partial);
             setMessages((current) =>
               current.map((item) =>
                 item.id === pendingMessage.id
-                  ? { ...item, content: "", response: partial, status: undefined }
+                  ? { ...item, response: partial, status: undefined }
                   : item
               )
             );

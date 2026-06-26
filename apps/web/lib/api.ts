@@ -297,6 +297,7 @@ export async function sendChat(
 export async function sendChatStream(
   message: string,
   callbacks: {
+    onStage?: (step: WorkflowStep) => void;
     onMeta: (meta: Omit<ChatResponse, "answer">) => void;
     onChunk: (accumulated: string, delta: string) => void;
   },
@@ -362,6 +363,10 @@ export async function sendChatStream(
           const delta = (parsed.data as { text?: string }).text ?? "";
           accumulated += delta;
           callbacks.onChunk(accumulated, delta);
+        } else if (parsed.event === "stage") {
+          if (callbacks.onStage) {
+            callbacks.onStage(parsed.data as WorkflowStep);
+          }
         } else if (parsed.event === "meta") {
           meta = parsed.data as Omit<ChatResponse, "answer">;
           callbacks.onMeta(meta);

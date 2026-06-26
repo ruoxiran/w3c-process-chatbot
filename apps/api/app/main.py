@@ -139,6 +139,18 @@ def _warm_retriever_caches() -> None:
     except Exception as exc:  # pragma: no cover - startup best effort
         logger.warning("retriever pre-warm failed; first request will pay the cost", exc_info=exc)
 
+    # Optional: pre-load the cross-encoder reranker so the first user
+    # request doesn't pay the ~3 s model-load tax. Skipped silently if
+    # sentence-transformers isn't installed.
+    if settings.reranker_cross_encoder_enabled:
+        try:
+            from app.services.cross_encoder_reranker import _load_model  # noqa: SLF001 — intentional
+
+            _load_model(settings.reranker_model)
+            logger.info("cross-encoder reranker pre-warmed at startup")
+        except Exception as exc:  # pragma: no cover - startup best effort
+            logger.info("cross-encoder pre-warm skipped: %s", exc)
+
 
 @lru_cache
 def _workflow_singleton() -> ChatWorkflow:
@@ -220,6 +232,12 @@ def _stream_chat_events(wf: ChatWorkflow, body: ChatRequest, expose_audit: bool)
     for event in wf.run_stream(body):
         if event["type"] == "delta":
             yield _sse_event("delta", {"text": event["text"]})
+        elif event["type"] == "stage":
+            # Pre-LLM workflow stages arrive as WorkflowStep instances;
+            # serialise via Pydantic so the UI sees the same shape it
+            # already knows from the non-streaming /chat response.
+            step = event["step"]
+            yield _sse_event("stage", step.model_dump(mode="json"))
         elif event["type"] == "response":
             final_response = event["response"]
         elif event["type"] == "error":

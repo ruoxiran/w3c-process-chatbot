@@ -22,6 +22,11 @@ from app.services.live_fetch import fetch_page_excerpt
 from app.services.scope import classify_scope
 from app.services.action_surfaces import format_surfaces_for_prompt, surfaces_for_intent
 from app.services.citation_verifier import verify_citations
+from app.services.cross_encoder_reranker import (
+    CrossEncoderRerankResult,
+    MissingDependencyError as _CrossEncoderMissing,
+    rerank_with_cross_encoder,
+)
 from app.services.provider_override import ProviderOverrideError, build_override_client
 from app.services.query_rewriter import rewrite_query
 from app.services.reranker import rerank_citations
@@ -137,17 +142,40 @@ class ChatWorkflow:
         request: ChatRequest,
         *,
         stream_sink: object | None = None,
+        stage_sink: object | None = None,
     ) -> ChatResponse:
         """Execute the full workflow and return the assembled ChatResponse.
 
         When ``stream_sink`` is provided AND the resolved LLM client supports
         token streaming, the workflow uses the streaming generation path and
         invokes ``stream_sink(delta)`` for each text chunk as it arrives.
-        ``stream_sink`` may be any callable; the typical caller is
-        ``run_stream`` which pipes deltas through a queue to its SSE
-        consumer. When ``stream_sink`` is ``None`` the workflow uses the
-        original blocking ``generate_answer`` path.
+
+        When ``stage_sink`` is provided, the workflow invokes
+        ``stage_sink(WorkflowStep)`` AS each pre-LLM stage completes — scope
+        classifier, task planner, entity resolver, retriever, reranker,
+        evidence coverage, process state. This lets the SSE consumer paint
+        the workflow inspector progressively rather than waiting for the
+        whole response. Both sinks are independent; either, both, or
+        neither can be set.
         """
+
+        def _emit_stage(step: "WorkflowStep") -> None:
+            if stage_sink is None:
+                return
+            try:
+                stage_sink(step)
+            except Exception:  # pragma: no cover - sink misbehaviour
+                logger.warning("stage_sink raised; continuing without progress events")
+
+        def _record(trace_list: list, step: "WorkflowStep") -> None:
+            """Append ``step`` to the trace and emit a stage event.
+
+            Use instead of ``_record(trace, step)`` so SSE consumers see
+            each completed workflow node as it lands, not all at once
+            at the end of the request.
+            """
+            trace_list.append(step)
+            _emit_stage(step)
 
         contextual_query = build_contextual_query(request.message, request.history)
         used_contextual_query = contextual_query != request.message
@@ -262,7 +290,7 @@ class ChatWorkflow:
         }
         if router_decision:
             audit["llm_router"] = router_decision.model_dump(mode="json")
-            trace.append(
+            _record(trace, 
                 WorkflowStep(
                     id="llm_router",
                     label="LLM-assisted router",
@@ -304,7 +332,7 @@ class ChatWorkflow:
             )
 
         if used_contextual_query:
-            trace.append(
+            _record(trace, 
                 WorkflowStep(
                     id="query_rewriter",
                     label="Context resolver",
@@ -319,7 +347,7 @@ class ChatWorkflow:
         routed_query = _router_augmented_query(contextual_query, router_decision)
         task_plan = plan_task(routed_query, request.history)
         audit["task_plan"] = task_plan.model_dump(mode="json")
-        trace.append(
+        _record(trace, 
             WorkflowStep(
                 id="task_planner",
                 label="Task planner",
@@ -334,7 +362,7 @@ class ChatWorkflow:
             resolved_entities = prefetched_entities
             audit["resolved_entities"] = [entity.model_dump(mode="json") for entity in resolved_entities]
             audit["w3c_api_prefetched"] = True
-            trace.append(
+            _record(trace, 
                 WorkflowStep(
                     id="w3c_api_resolver",
                     label="W3C API entity resolver",
@@ -344,7 +372,7 @@ class ChatWorkflow:
             )
         elif prefetch_error is not None:
             audit["w3c_api_error"] = prefetch_error
-            trace.append(
+            _record(trace, 
                 WorkflowStep(
                     id="w3c_api_resolver",
                     label="W3C API entity resolver",
@@ -356,7 +384,7 @@ class ChatWorkflow:
             try:
                 resolved_entities = self.w3c_api_client.resolve_entities(routed_query)
                 audit["resolved_entities"] = [entity.model_dump(mode="json") for entity in resolved_entities]
-                trace.append(
+                _record(trace, 
                     WorkflowStep(
                         id="w3c_api_resolver",
                         label="W3C API entity resolver",
@@ -367,7 +395,7 @@ class ChatWorkflow:
             except Exception as exc:  # pragma: no cover - external service fallback
                 audit["w3c_api_error"] = type(exc).__name__
                 logger.warning("W3C API entity resolution failed", exc_info=exc)
-                trace.append(
+                _record(trace, 
                     WorkflowStep(
                         id="w3c_api_resolver",
                         label="W3C API entity resolver",
@@ -393,7 +421,7 @@ class ChatWorkflow:
             try:
                 draft_contexts = draft_future.result()
                 audit["draft_contexts"] = [context.model_dump(mode="json") for context in draft_contexts]
-                trace.append(
+                _record(trace, 
                     WorkflowStep(
                         id="draft_context_resolver",
                         label="GitHub draft context resolver",
@@ -404,7 +432,7 @@ class ChatWorkflow:
             except Exception as exc:  # pragma: no cover - external service fallback
                 audit["draft_context_error"] = type(exc).__name__
                 logger.warning("GitHub draft context resolution failed", exc_info=exc)
-                trace.append(
+                _record(trace, 
                     WorkflowStep(
                         id="draft_context_resolver",
                         label="GitHub draft context resolver",
@@ -419,7 +447,7 @@ class ChatWorkflow:
                 compiled_context = compiled_future.result()
                 if compiled_context:
                     audit["compiled_context"] = compiled_context.model_dump(mode="json")
-                trace.append(
+                _record(trace, 
                     WorkflowStep(
                         id="compiled_context_resolver",
                         label="Compiled knowledge resolver",
@@ -430,7 +458,7 @@ class ChatWorkflow:
             except Exception as exc:  # pragma: no cover - local filesystem fallback
                 audit["compiled_context_error"] = type(exc).__name__
                 logger.warning("Compiled context resolution failed", exc_info=exc)
-                trace.append(
+                _record(trace, 
                     WorkflowStep(
                         id="compiled_context_resolver",
                         label="Compiled knowledge resolver",
@@ -445,7 +473,7 @@ class ChatWorkflow:
         used_entity_augmented_query = retrieval_query != planned_query
         audit["used_entity_augmented_query"] = used_entity_augmented_query
         if used_entity_augmented_query:
-            trace.append(
+            _record(trace, 
                 WorkflowStep(
                     id="entity_query_enricher",
                     label="Entity-aware retrieval query",
@@ -497,7 +525,7 @@ class ChatWorkflow:
                 except Exception as exc:  # pragma: no cover - non-fatal
                     logger.warning("Variant retrieval failed for %r", variant, exc_info=exc)
             citations = _merge_citations(citations, extra_hits, limit=12)
-            trace.append(
+            _record(trace, 
                 WorkflowStep(
                     id="query_rewriter",
                     label="LLM query rewriter",
@@ -508,41 +536,70 @@ class ChatWorkflow:
                     ),
                 )
             )
-        # LLM-as-reranker. Take the hybrid-ranked candidates and let the
-        # configured chat LLM reorder them by judged relevance to the user's
-        # actual question. Skipped silently when llm_provider=template (eval
-        # mode) or when the reranker has no working client.
-        if self.settings.llm_provider != "template" and len(citations) >= 4:
-            router_client = (
-                self.openai_compatible_client
-                if self.settings.llm_provider in {"openai", "openai-compatible", "openrouter"}
-                else self.ollama_client
-            )
-            rerank_result = rerank_citations(
-                request.message,
-                citations,
-                settings=self.settings,
-                client=router_client,
-                model=router_model,
-            )
-            if rerank_result.reordered:
-                citations = rerank_result.citations
-                audit["reranker_model"] = rerank_result.model
-                trace.append(
-                    WorkflowStep(
-                        id="reranker",
-                        label="LLM relevance reranker",
-                        status="completed",
-                        detail=(
-                            "Reordered the hybrid retrieval candidates by LLM-judged relevance to "
-                            "the user's question. Hybrid scores remain the tie-breaker; the model "
-                            "cannot drop a citation from the result list."
-                        ),
-                        references=citations,
-                    )
+        # Reranker. Try the local cross-encoder first (fast, no LLM quota
+        # cost, model-trained for relevance); fall back to the LLM-as-
+        # reranker if sentence-transformers isn't installed. Skipped
+        # silently for template provider (eval mode) or <4 candidates.
+        used_cross_encoder = False
+        if len(citations) >= 4:
+            if self.settings.reranker_cross_encoder_enabled:
+                ce_result: CrossEncoderRerankResult = rerank_with_cross_encoder(
+                    request.message,
+                    citations,
+                    model_name=self.settings.reranker_model,
                 )
-            elif rerank_result.skipped_reason:
-                audit["reranker_skipped"] = rerank_result.skipped_reason
+                if ce_result.reordered:
+                    citations = ce_result.citations
+                    audit["reranker_kind"] = "cross_encoder"
+                    audit["reranker_model"] = self.settings.reranker_model
+                    used_cross_encoder = True
+                    _record(trace, 
+                        WorkflowStep(
+                            id="reranker",
+                            label="Cross-encoder reranker",
+                            status="completed",
+                            detail=(
+                                f"Reordered the hybrid retrieval candidates with the local "
+                                f"{self.settings.reranker_model} cross-encoder. Hybrid order is "
+                                "the tie-breaker; the reranker only reorders, never drops citations."
+                            ),
+                            references=citations,
+                        )
+                    )
+                elif ce_result.skipped_reason and "unavailable" not in (ce_result.skipped_reason or ""):
+                    audit["reranker_skipped"] = ce_result.skipped_reason
+            if not used_cross_encoder and self.settings.llm_provider != "template":
+                router_client = (
+                    self.openai_compatible_client
+                    if self.settings.llm_provider in {"openai", "openai-compatible", "openrouter"}
+                    else self.ollama_client
+                )
+                rerank_result = rerank_citations(
+                    request.message,
+                    citations,
+                    settings=self.settings,
+                    client=router_client,
+                    model=router_model,
+                )
+                if rerank_result.reordered:
+                    citations = rerank_result.citations
+                    audit["reranker_kind"] = "llm"
+                    audit["reranker_model"] = rerank_result.model
+                    _record(trace, 
+                        WorkflowStep(
+                            id="reranker",
+                            label="LLM relevance reranker",
+                            status="completed",
+                            detail=(
+                                "Reordered the hybrid retrieval candidates by LLM-judged relevance to "
+                                "the user's question. Hybrid scores remain the tie-breaker; the model "
+                                "cannot drop a citation from the result list."
+                            ),
+                            references=citations,
+                        )
+                    )
+                elif rerank_result.skipped_reason:
+                    audit["reranker_skipped"] = rerank_result.skipped_reason
 
         process_state = extract_process_state(retrieval_query, citations, resolved_entities)
         evidence_coverage = check_evidence_coverage(
@@ -553,7 +610,7 @@ class ChatWorkflow:
             compiled_context=compiled_context,
             query=routed_query,
         )
-        trace.append(
+        _record(trace, 
             WorkflowStep(
                 id="retriever",
                 label="Authoritative source retrieval",
@@ -582,7 +639,7 @@ class ChatWorkflow:
                 process_state=process_state,
                 compiled_context=compiled_context,
             )
-            trace.append(
+            _record(trace, 
                 WorkflowStep(
                     id="targeted_retrieval",
                     label="Targeted second retrieval",
@@ -596,7 +653,7 @@ class ChatWorkflow:
             )
 
         audit["evidence_coverage"] = evidence_coverage.model_dump(mode="json")
-        trace.append(
+        _record(trace, 
             WorkflowStep(
                 id="evidence_coverage",
                 label="Evidence coverage check",
@@ -605,7 +662,7 @@ class ChatWorkflow:
                 references=citations,
             )
         )
-        trace.append(
+        _record(trace, 
             WorkflowStep(
                 id="process_state",
                 label="Process state extraction",
@@ -632,7 +689,7 @@ class ChatWorkflow:
                     timeout=self.settings.live_fetch_timeout_seconds,
                     allowlist=self.settings.allowlist_entries,
                 )
-            trace.append(
+            _record(trace, 
                 WorkflowStep(
                     id="live_fetch",
                     label="Live page fetch",
@@ -771,7 +828,7 @@ class ChatWorkflow:
         # future debugger / serializer can't reach it from the local frame.
         generation_client = None
 
-        trace.append(
+        _record(trace, 
             WorkflowStep(
                 id="answer_generator",
                 label="Answer generation",
@@ -810,7 +867,7 @@ class ChatWorkflow:
                     "model": verification.model,
                     "stripped_count": len(verification.stripped_pairs),
                 }
-                trace.append(
+                _record(trace, 
                     WorkflowStep(
                         id="citation_verifier",
                         label="Citation verifier",
@@ -826,7 +883,7 @@ class ChatWorkflow:
 
         if classification.injection_risk:
             audit["safety_note"] = "Potential prompt injection detected; answer constrained to trusted sources."
-            trace.append(
+            _record(trace, 
                 WorkflowStep(
                     id="injection_guard",
                     label="Prompt-injection guard",
@@ -913,48 +970,62 @@ class ChatWorkflow:
         """Generator that yields workflow events for SSE streaming.
 
         Event shapes:
+          - ``{"type": "stage", "step": <WorkflowStep>}`` — a pre-LLM
+            workflow stage just completed (scope classifier, task plan,
+            retriever, reranker, ...). Lets the UI paint the inspector
+            progressively, before the LLM has even started.
           - ``{"type": "delta", "text": <str>}`` — one LLM token chunk
           - ``{"type": "response", "response": ChatResponse}`` — final answer
           - ``{"type": "error", "message": <str>}`` — runner crashed
 
-        The actual workflow runs in a worker thread, with ``run`` configured
-        to feed each LLM token delta into a ``queue.Queue``. This generator
-        drains the queue, yielding ``delta`` events as they arrive, and
-        finally yields ``response`` once the worker thread completes.
+        The actual workflow runs in a worker thread, with ``run``
+        configured to push stage updates AND LLM token deltas into a
+        shared ``queue.Queue``. This generator drains the queue,
+        forwarding each item as the appropriate event, and finally
+        yields ``response`` once the worker thread completes.
 
-        End-to-end time isn't reduced — the pre-LLM phase still blocks on
-        retrieval / W3C API / GitHub calls — but the user sees the answer
-        text appear progressively from the moment the LLM starts producing
-        tokens, rather than waiting for the full ``generate_answer`` round
-        trip.
+        End-to-end time isn't reduced — the pre-LLM phase still blocks
+        on retrieval / W3C API / GitHub calls — but the user sees the
+        workflow inspector populate stage-by-stage as those steps
+        complete, and the answer text streams in the moment the LLM
+        starts producing tokens.
         """
         import queue
         import threading
 
         sentinel = object()
-        delta_queue: "queue.Queue[object]" = queue.Queue()
+        event_queue: "queue.Queue[object]" = queue.Queue()
         result_holder: dict[str, ChatResponse | BaseException] = {}
 
         def push_delta(delta: str) -> None:
-            delta_queue.put(delta)
+            event_queue.put(("delta", delta))
+
+        def push_stage(step: "WorkflowStep") -> None:
+            event_queue.put(("stage", step))
 
         def worker() -> None:
             try:
-                response = self.run(request, stream_sink=push_delta)
+                response = self.run(
+                    request, stream_sink=push_delta, stage_sink=push_stage
+                )
                 result_holder["response"] = response
             except BaseException as exc:  # pragma: no cover - propagated to caller
                 result_holder["error"] = exc
             finally:
-                delta_queue.put(sentinel)
+                event_queue.put(sentinel)
 
         thread = threading.Thread(target=worker, name="chat-workflow-stream", daemon=True)
         thread.start()
 
         while True:
-            item = delta_queue.get()
+            item = event_queue.get()
             if item is sentinel:
                 break
-            yield {"type": "delta", "text": str(item)}
+            kind, payload = item  # type: ignore[misc]
+            if kind == "delta":
+                yield {"type": "delta", "text": str(payload)}
+            elif kind == "stage":
+                yield {"type": "stage", "step": payload}
         thread.join()
 
         if "error" in result_holder:
