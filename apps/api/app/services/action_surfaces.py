@@ -42,30 +42,40 @@ class ActionSurface:
 ACTION_SURFACES: dict[str, list[ActionSurface]] = {
     "advance_specification": [
         ActionSurface(
-            label="Request a transition",
+            label="Request a transition (Guidebook entry point)",
             url="https://www.w3.org/guide/transitions/",
-            notes="The Guidebook transition page lists the prerequisites and the request form.",
+            notes="Lists the prerequisites and links to the transition-request form.",
+        ),
+        ActionSurface(
+            label="Submit the transition-request form (W3C Webmaster sysreq)",
+            url="https://www.w3.org/Webmaster/Group/transition.html",
+            notes="The actual form that asks the Director to evaluate a Recommendation-track transition.",
         ),
         ActionSurface(
             label="Email the W3C Team about a transition",
             email="w3t-tr@w3.org",
-            notes="Internal Team list for transition-meeting scheduling and questions.",
+            notes="Internal Team list for transition-meeting scheduling and clarifying questions.",
         ),
         ActionSurface(
             label="W3C Process — Recommendation Track",
             url="https://www.w3.org/policies/process/#recs-and-notes",
+        ),
+        ActionSurface(
+            label="Implementation report template",
+            url="https://www.w3.org/guide/transitions/implementation-report.html",
+            notes="Use when documenting two-implementer evidence ahead of CR → PR transition.",
         ),
     ],
     "horizontal_review": [
         ActionSurface(
             label="File an accessibility (a11y) review request",
             repo="w3c/a11y-request",
-            url="https://github.com/w3c/a11y-request/issues/new",
+            url="https://github.com/w3c/a11y-request/issues/new/choose",
         ),
         ActionSurface(
             label="File an internationalization (i18n) review request",
             repo="w3c/i18n-request",
-            url="https://github.com/w3c/i18n-request/issues/new",
+            url="https://github.com/w3c/i18n-request/issues/new/choose",
         ),
         ActionSurface(
             label="File a privacy review request",
@@ -164,6 +174,43 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
             repo="w3c/strategy",
             url="https://github.com/w3c/strategy/issues",
         ),
+        ActionSurface(
+            label="Open an incubation transfer issue",
+            repo="w3c/strategy",
+            url="https://github.com/w3c/strategy/issues/new/choose",
+            notes="Use the 'WG to incubate' / 'CG to WG' templates.",
+        ),
+    ],
+    "plan_or_complete_review": [
+        ActionSurface(
+            label="Wide-review guidance",
+            url="https://www.w3.org/guide/documentreview/",
+        ),
+        ActionSurface(
+            label="Open a wide-review request",
+            url="https://www.w3.org/guide/transitions/wide-review-request.html",
+        ),
+        ActionSurface(
+            label="Process — Reviews and Review Responsibilities",
+            url="https://www.w3.org/policies/process/#doc-reviews",
+        ),
+    ],
+    "explain_process": [
+        ActionSurface(
+            label="W3C Process Document",
+            url="https://www.w3.org/policies/process/",
+            notes="Normative source of all Process rules.",
+        ),
+        ActionSurface(
+            label="W3C Guidebook (Art of Consensus)",
+            url="https://www.w3.org/guide/",
+            notes="Practice guidance, day-to-day workflow.",
+        ),
+        ActionSurface(
+            label="Ask in the W3C Process Community Group",
+            url="https://github.com/w3c/w3process/issues",
+            notes="Use for clarification on Process language or to propose Process changes.",
+        ),
     ],
 }
 
@@ -183,7 +230,7 @@ def format_surfaces_for_prompt(surfaces: list[ActionSurface]) -> str:
     """Render surfaces as a plain bulleted list (no ``[An]`` labels).
 
     The model should embed the concrete URL / mailto / repo directly into
-    the answer ("file at https://github.com/w3c/i18n-request/issues/new"),
+    the answer ("file at https://github.com/w3c/i18n-request/issues/new/choose"),
     not invent a reference tag. Labels like ``[A1]`` would just be echoed
     back into the answer text and the UI's citation renderer doesn't know
     how to dereference them.
