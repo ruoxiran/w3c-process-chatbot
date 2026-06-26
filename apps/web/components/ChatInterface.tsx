@@ -14,6 +14,7 @@ import {
   listModels,
   runEval,
   sendChat,
+  sendChatStream,
   submitFeedback,
   type ChatResponse,
   type Citation,
@@ -128,17 +129,43 @@ export function ChatInterface() {
 
     try {
       const override = providerConfig ? configToOverride(providerConfig) : undefined;
-      const result = await sendChat(trimmed, selectedModel, history, override);
+      // Streaming path: update the bubble + inspector progressively as the
+      // server emits meta then delta chunks. The first ``meta`` carries the
+      // workflow trace and citations so the right panel populates immediately;
+      // the chunks fill in the answer text with a typing effect.
+      const result = await sendChatStream(
+        trimmed,
+        {
+          onMeta: (meta) => {
+            const partial = { ...meta, answer: "" } as ChatResponse;
+            setSelectedResponse(partial);
+            setMessages((current) =>
+              current.map((item) =>
+                item.id === pendingMessage.id
+                  ? { ...item, content: "", response: partial, status: undefined }
+                  : item
+              )
+            );
+          },
+          onChunk: (accumulated) => {
+            setMessages((current) =>
+              current.map((item) =>
+                item.id === pendingMessage.id
+                  ? { ...item, content: accumulated }
+                  : item
+              )
+            );
+          },
+        },
+        selectedModel,
+        history,
+        override
+      );
       setSelectedResponse(result);
       setMessages((current) =>
         current.map((item) =>
           item.id === pendingMessage.id
-            ? {
-                ...item,
-                content: result.answer,
-                response: result,
-                status: undefined
-              }
+            ? { ...item, content: result.answer, response: result, status: undefined }
             : item
         )
       );

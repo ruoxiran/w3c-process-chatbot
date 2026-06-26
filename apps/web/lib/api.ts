@@ -279,6 +279,124 @@ export async function sendChat(
   return response.json() as Promise<ChatResponse>;
 }
 
+/**
+ * Streaming variant of ``sendChat``. POSTs to ``/chat/stream`` and parses the
+ * SSE response: ``meta`` carries everything except the answer body, ``delta``
+ * events carry chunks of the answer text, and ``done`` signals completion.
+ *
+ * The ``onChunk`` callback is invoked for each delta with the partial-answer
+ * accumulator. The returned promise resolves to the final ``ChatResponse``
+ * once ``done`` arrives.
+ *
+ * The endpoint today is "pseudo-streaming" — the server still waits for the
+ * full workflow to complete before emitting anything, then chunks the answer
+ * for a typing effect. Real token streaming will land when ``run()`` is
+ * refactored. The wire protocol below is the same for both, so the frontend
+ * stays.
+ */
+export async function sendChatStream(
+  message: string,
+  callbacks: {
+    onMeta: (meta: Omit<ChatResponse, "answer">) => void;
+    onChunk: (accumulated: string, delta: string) => void;
+  },
+  model?: string,
+  history: ChatTurn[] = [],
+  providerOverride?: ProviderOverride
+): Promise<ChatResponse> {
+  const body: Record<string, unknown> = {
+    message,
+    locale: "en",
+    model,
+    history: history.slice(-8),
+  };
+  if (providerOverride) {
+    body.provider_override = providerOverride;
+  }
+
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    // The timeout fires after the WHOLE stream completes, not during. Clearing
+    // here means we rely on the network stack to keep the connection alive
+    // for chunked SSE.
+    clearTimeout(id);
+  }
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Chat stream request failed with ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let meta: Omit<ChatResponse, "answer"> | null = null;
+  let accumulated = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // Split on SSE event boundaries (\n\n).
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const raw = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const parsed = parseSseEvent(raw);
+      if (parsed) {
+        if (parsed.event === "meta") {
+          meta = parsed.data as Omit<ChatResponse, "answer">;
+          callbacks.onMeta(meta);
+        } else if (parsed.event === "delta") {
+          const delta = (parsed.data as { text?: string }).text ?? "";
+          accumulated += delta;
+          callbacks.onChunk(accumulated, delta);
+        } else if (parsed.event === "done") {
+          // We've collected everything; flush the remaining buffer (if any)
+          // and return the assembled ChatResponse below.
+          buffer = "";
+          boundary = -1;
+          continue;
+        }
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+
+  if (!meta) {
+    throw new Error("Chat stream ended without a meta event");
+  }
+  return { ...meta, answer: accumulated } as ChatResponse;
+}
+
+function parseSseEvent(raw: string): { event: string; data: unknown } | null {
+  const lines = raw.split("\n");
+  let eventName = "message";
+  const dataParts: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      eventName = line.slice("event:".length).trim();
+    } else if (line.startsWith("data:")) {
+      dataParts.push(line.slice("data:".length).trimStart());
+    }
+  }
+  if (dataParts.length === 0) return null;
+  try {
+    return { event: eventName, data: JSON.parse(dataParts.join("\n")) };
+  } catch {
+    return null;
+  }
+}
+
 export async function runEval(): Promise<EvalRunResponse> {
   const response = await fetchWithTimeout(`${API_BASE_URL}/eval/run`, { method: "POST" }, CHAT_TIMEOUT_MS);
 
