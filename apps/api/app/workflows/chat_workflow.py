@@ -19,6 +19,7 @@ from app.services.process_state import extract_process_state
 from app.services.live_fetch import fetch_page_excerpt
 from app.services.scope import classify_scope
 from app.services.provider_override import ProviderOverrideError, build_override_client
+from app.services.query_rewriter import rewrite_query
 from app.services.task_planner import build_planned_retrieval_query, plan_task
 from app.services.w3c_api import W3CAPIClient
 
@@ -396,10 +397,57 @@ class ChatWorkflow:
                 )
             )
 
+        # Multi-query retrieval: ask the LLM for 1-3 W3C-canonical rewrites of
+        # the user's question and merge their citations with the primary pass.
+        # Skipped when the model provider is "template" (e.g. eval workflow)
+        # to keep evals deterministic and offline.
+        rewrite_variants: list[str] = []
+        if self.settings.llm_provider != "template":
+            router_client = (
+                self.openai_compatible_client
+                if self.settings.llm_provider in {"openai", "openai-compatible", "openrouter"}
+                else self.ollama_client
+            )
+            try:
+                rewrite_result = rewrite_query(
+                    request.message,
+                    settings=self.settings,
+                    client=router_client,
+                    model=router_model,
+                )
+                rewrite_variants = rewrite_result.variants
+                audit["query_rewrites"] = rewrite_variants
+                if rewrite_result.error:
+                    audit["query_rewrite_error"] = rewrite_result.error
+            except Exception as exc:  # pragma: no cover - non-fatal
+                logger.warning("Query rewriter failed; continuing with single-query retrieval", exc_info=exc)
+                audit["query_rewrite_error"] = type(exc).__name__
+
         # Pass the raw user message separately so the retriever can rank by
         # what the user actually asked instead of being biased by the 10+
         # lines of task-planner / entity / router metadata in retrieval_query.
         citations = self.retriever.retrieve(retrieval_query, user_message=request.message)
+        if rewrite_variants:
+            extra_hits: list[Citation] = []
+            for variant in rewrite_variants:
+                try:
+                    extra_hits.extend(
+                        self.retriever.retrieve(variant, user_message=variant)
+                    )
+                except Exception as exc:  # pragma: no cover - non-fatal
+                    logger.warning("Variant retrieval failed for %r", variant, exc_info=exc)
+            citations = _merge_citations(citations, extra_hits, limit=12)
+            trace.append(
+                WorkflowStep(
+                    id="query_rewriter",
+                    label="LLM query rewriter",
+                    status="completed",
+                    detail=(
+                        f"Generated {len(rewrite_variants)} W3C-canonical rewrites and merged their "
+                        "citations with the primary retrieval. Original message remains the authoritative query."
+                    ),
+                )
+            )
         process_state = extract_process_state(retrieval_query, citations, resolved_entities)
         evidence_coverage = check_evidence_coverage(
             plan=task_plan,

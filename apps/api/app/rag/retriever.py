@@ -236,6 +236,15 @@ class Retriever:
                 self._query_embeddings.popitem(last=False)
         return embedding
 
+    def _npz_cache_path(self) -> Path:
+        """Sibling ``.npz`` next to the JSONL — packed float32 matrix + ids.
+
+        The JSONL is still the resumable, human-inspectable build artifact;
+        the npz is a derived load-time format that goes from 8 s parse to
+        ~150 ms via numpy.
+        """
+        return self.embedding_cache_path.with_suffix(self.embedding_cache_path.suffix + ".npz")
+
     def _load_dense_cache(self) -> DenseEmbeddingCache | None:
         if not self.embedding_cache_path.exists():
             return None
@@ -245,10 +254,20 @@ class Retriever:
         with self._dense_cache_lock:
             if self._dense_cache and self._dense_cache.mtime == mtime:
                 return self._dense_cache
+
+            # Fast path: load from .npz sibling if it is at least as fresh
+            # as the JSONL source-of-truth.
+            cache = self._try_load_npz_cache(mtime)
+            if cache is not None:
+                self._dense_cache = cache
+                return self._dense_cache
+
+            # Slow path: parse the JSONL, then write the .npz so future
+            # restarts hit the fast path.
             vectors: dict[str, list[float]] = {}
             model = ""
-            with self.embedding_cache_path.open("r", encoding="utf-8") as cache:
-                for line in cache:
+            with self.embedding_cache_path.open("r", encoding="utf-8") as cache_file:
+                for line in cache_file:
                     if not line.strip():
                         continue
                     try:
@@ -268,9 +287,6 @@ class Retriever:
                         vectors[chunk_id] = values
             if model and model != self.embedding_model:
                 return None
-            # Build a stacked numpy matrix of L2-normalised vectors so the
-            # per-query cosine scoring is a single matrix-vector multiply
-            # instead of 5879 pure-Python dot products.
             chunk_ids = tuple(vectors.keys())
             if chunk_ids:
                 matrix = np.asarray(
@@ -282,6 +298,10 @@ class Retriever:
             else:
                 matrix = np.zeros((0, 0), dtype=np.float32)
             chunk_to_row = {cid: i for i, cid in enumerate(chunk_ids)}
+            try:
+                self._save_npz_cache(matrix, chunk_ids, model or self.embedding_model)
+            except Exception as exc:  # pragma: no cover - non-fatal
+                logger.warning("Failed to write npz cache; will keep parsing JSONL next time", exc_info=exc)
             self._dense_cache = DenseEmbeddingCache(
                 vectors=vectors,
                 matrix=matrix,
@@ -291,6 +311,58 @@ class Retriever:
                 mtime=mtime,
             )
             return self._dense_cache
+
+    def _try_load_npz_cache(self, jsonl_mtime: float) -> DenseEmbeddingCache | None:
+        npz_path = self._npz_cache_path()
+        if not npz_path.exists():
+            return None
+        if npz_path.stat().st_mtime < jsonl_mtime:
+            return None
+        try:
+            archive = np.load(npz_path, allow_pickle=False)
+            matrix = np.asarray(archive["matrix"], dtype=np.float32)
+            chunk_ids_arr = archive["chunk_ids"]  # bytes array
+            model_arr = archive["model"]  # bytes scalar
+        except Exception as exc:  # pragma: no cover - corrupted cache
+            logger.warning("Failed to load npz cache; falling back to JSONL", exc_info=exc)
+            return None
+        chunk_ids = tuple(
+            value.decode("utf-8") if isinstance(value, (bytes, bytearray)) else str(value)
+            for value in chunk_ids_arr.tolist()
+        )
+        raw_model = model_arr.item() if hasattr(model_arr, "item") else model_arr
+        cached_model = raw_model.decode("utf-8") if isinstance(raw_model, (bytes, bytearray)) else str(raw_model)
+        if cached_model and cached_model != self.embedding_model:
+            return None
+        chunk_to_row = {cid: i for i, cid in enumerate(chunk_ids)}
+        # Reconstruct ``vectors`` dict lazily — most callers only need the
+        # matrix; keep an empty dict here to skip the materialisation cost.
+        return DenseEmbeddingCache(
+            vectors={},
+            matrix=matrix,
+            chunk_ids=chunk_ids,
+            chunk_to_row=chunk_to_row,
+            model=cached_model or self.embedding_model,
+            mtime=jsonl_mtime,
+        )
+
+    def _save_npz_cache(self, matrix: np.ndarray, chunk_ids: tuple[str, ...], model: str) -> None:
+        npz_path = self._npz_cache_path()
+        npz_path.parent.mkdir(parents=True, exist_ok=True)
+        # np.savez appends ``.npz`` to whatever filename it's given when the
+        # arg is a string/Path; write directly to the final path with an
+        # explicit binary file handle to avoid that surprise (and to keep
+        # the suffix .jsonl.npz rather than .jsonl.npz.npz).
+        with npz_path.open("wb") as handle:
+            # Bytes arrays avoid the ``allow_pickle=True`` requirement that
+            # generic-object arrays carry. The decoder converts them back to
+            # str on load.
+            np.savez(
+                handle,
+                matrix=matrix,
+                chunk_ids=np.asarray([s.encode("utf-8") for s in chunk_ids]),
+                model=np.asarray(model.encode("utf-8")),
+            )
 
     def _load_index(self) -> CorpusIndex:
         if not self.corpus_path.exists():
