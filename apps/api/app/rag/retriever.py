@@ -13,7 +13,13 @@ import numpy as np
 from app.core.config import Settings, get_settings
 from app.core.paths import resolve_data_path
 from app.models.schemas import Citation, SourceType
-from app.rag.guide_topics import matching_guide_topics
+from app.rag.guide_topics import (
+    RELEVANCE_RULES,
+    TOPIC_BONUS_RULES,
+    apply_scoring_rules,
+    is_topic_match,
+    matching_guide_topics,
+)
 from app.services.embeddings import OllamaEmbeddingClient
 
 
@@ -629,79 +635,16 @@ def _heading_overlap(query: str, heading: str) -> int:
 
 
 def _topic_bonus(query: str, title: str, heading: str, body: str) -> int:
-    text = query.lower()
-    combined = f"{heading} {body}"
-    score = 0
-    if "formal objection" in text and "formal objection" in heading:
-        score += 10
-    elif "formal objection" in text and "formal objection" in combined:
-        score += 5
-    if ("cr" in text or "rec" in text) and "transitioning to recommendation" in heading:
-        score += 12
-    if (
-        "cr" in text
-        or "rec" in text
-        or "candidate recommendation" in text
-        or "recommendation" in text
-        or "候选推荐" in text
-        or "推荐标准" in text
-        or "推进" in text
-    ) and "advancing on the recommendation track" in heading:
-        score += 12
-    if "charter" in text and "charter review and approval" in heading:
-        score += 12
-    if ("charter" in text or "章程" in text) and "starting a group" in heading:
-        score += 10
-    if ("working group" in text or "工作组" in text) and "groups" in heading:
-        score += 5
-    if "patent" in text and "patent" in heading:
-        score += 8
-    if "wide review" in text and "wide review" in heading:
-        score += 8
-    if _is_horizontal_review_query(text):
-        if "reviews and review responsibilities" in heading:
-            score += 34
-        if "#doc-reviews" in combined:
-            score += 22
-        if "how to get horizontal review" in heading:
-            score += 30
-        if "working with horizontal review labels" in heading:
-            score += 28
-        if "needs-resolution" in heading or "needs-resolution" in body:
-            score += 22
-        if "issue trackers" in heading or "tracker boards" in body:
-            score += 18
-        if "horizontal groups" in heading:
-            score += 18
-        if "labels and other metadata" in title and "horizontal reviews" in heading:
-            score += 18
-        if "organize a technical report transition" in title and "horizontal" in body:
-            score += 14
-    if ("workshop" in text or "workshops" in text or "研讨会" in text) and (
-        "workshop" in heading or "workshop" in title or "workshops.html" in body
-    ):
-        # Boost dedicated workshop pages so queries like "how do I prepare a
-        # workshop" surface the workshops Guidebook chapter ahead of generic
-        # meeting / hosting pages that share the parent ``/guide/meetings/``
-        # path.
-        score += 18
-    if ("formal objection" in text or "异议" in text) and "formal objection" in combined:
-        score += 6
-    if ("appeal" in text or "申诉" in text) and ("appeal" in heading or "appeal" in title):
-        score += 8
-    if ("recharter" in text or "rechartering" in text) and ("charter" in heading or "rechartering" in combined):
-        score += 10
-    if (
-        "fpwd" in text or "first public working draft" in text
-    ) and ("first public working draft" in combined or "fpwd" in combined):
-        score += 10
-    if ("ac review" in text or "advisory committee" in text) and (
-        "advisory committee" in heading or "ac review" in combined
-    ):
-        score += 10
-    if ("next step" in text or "下一步" in text) and "next step finder" in combined:
-        score += 8
-    return score
+    """W3C-specific score nudge for the query/passage pair.
+
+    Rules live as data in ``guide_topics.TOPIC_BONUS_RULES``; this
+    function is the call site that applies them. Adding a new boost
+    is a one-row edit in that table, not a patch to the ranker.
+    """
+    return apply_scoring_rules(
+        TOPIC_BONUS_RULES,
+        query=query, title=title, heading=heading, body=body,
+    )
 
 
 def _balanced_hits(
@@ -1055,92 +998,24 @@ def _quality_bonus(chunk: dict[str, object]) -> int:
 
 
 def _relevance_adjustment(query: str, chunk: dict[str, object], title: str, heading: str, body: str) -> int:
-    text = query.lower()
-    url = str(chunk.get("source_url") or "").lower()
-    source_type = str(chunk.get("source_type") or "")
-    combined = f"{title} {heading} {body} {url}"
-    score = 0
+    """W3C-specific authority/staleness adjustment for a candidate.
 
-    if source_type == "process" and "w3.org/policies/process/" in url:
-        score += 10
-    if source_type == "process" and ("github.com/w3c/process" in url or "/snapshots/" in url):
-        score -= 10
-    if "/snapshots/" in url and "snapshot" not in text:
-        score -= 8
-
-    transition_query = any(
-        needle in text
-        for needle in [
-            "cr",
-            "candidate recommendation",
-            "rec",
-            "recommendation",
-            "transition",
-            "advance",
-            "推进",
-            "候选推荐",
-            "推荐标准",
-        ]
+    Rules live as data in ``guide_topics.RELEVANCE_RULES``. Includes
+    penalties (negative scores) for off-topic chunks (e.g. namespace
+    pages surfacing on REC-track queries) and snapshot/draft chunks
+    that aren't authoritative.
+    """
+    return apply_scoring_rules(
+        RELEVANCE_RULES,
+        query=query, title=title, heading=heading, body=body,
+        url=str(chunk.get("source_url") or ""),
+        source_type=str(chunk.get("source_type") or ""),
     )
-    if transition_query:
-        if "transitioning to recommendation" in heading or "advancing on the recommendation track" in heading:
-            score += 18
-        if source_type == "process" and "transitioning to recommendation" in heading:
-            score += 18
-        if "organize a technical report transition" in title or "/guide/transitions" in url:
-            score += 14
-        if "namespace" in combined and "namespace" not in text:
-            score -= 14
-        if "comment is invited on the draft" in body:
-            score -= 12
-
-    if "staff contact" in text or "team contact" in text:
-        if "staff contacts" in heading or "teamcontact" in url:
-            score += 24
-        if "teamcontact" in url or "staff contact" in combined or "team contact" in combined:
-            score += 14
-        if source_type == "guide" and "chair/role" in url and "staff contact" not in heading:
-            score -= 8
-    if "meeting" in text or "chair" in text or "会议" in text:
-        if "chair/meetings" in url or "meeting" in heading:
-            score += 12
-    if _is_horizontal_review_query(text):
-        if source_type == "process" and "#doc-reviews" in url:
-            score += 42
-        if "/guide/documentreview" in url:
-            score += 34
-        if "/guide/process/horizontal-groups" in url:
-            score += 26
-        if "/guide/github/issue-metadata" in url:
-            score += 24
-        if "/guide/transitions" in url and ("needs-resolution" in body or "horizontal" in body):
-            score += 18
-        if "github.com/w3c/guide" in url and "documentreview" not in url and "horizontal-groups" not in url:
-            score -= 6
-    return score
 
 
 def _is_horizontal_review_query(text: str) -> bool:
-    return any(
-        needle in text
-        for needle in [
-            "horizontal review",
-            "horizontal group",
-            "horizontal groups",
-            "横向审查",
-            "a11y review",
-            "accessibility review",
-            "i18n review",
-            "internationalization review",
-            "privacy review",
-            "security review",
-            "tag review",
-            "*-tracker",
-            "*-needs-resolution",
-            "needs-resolution",
-            "horizontal issue tracker",
-        ]
-    )
+    """Backwards-compatible wrapper. Use ``is_topic_match(query, "horizontal_review")`` directly going forward."""
+    return is_topic_match(text, "horizontal_review")
 
 
 def _is_toc_chunk(chunk: dict[str, object]) -> bool:
