@@ -5,12 +5,18 @@ services:
       dockerfile: deploy/docker/api.Dockerfile
     env_file:
       - ../.env
+    environment:
+      # Inside the docker network the API reaches Ollama by service
+      # name, not localhost. Override via .env when pointing at a
+      # remote endpoint.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
     ports:
       - "8000:8000"
-    depends_on:
-      - postgres
-      - redis
-      - qdrant
+    volumes:
+      # Corpus + dense-embedding cache are gitignored and built locally
+      # with scripts/import_w3c_sources.py + build_embedding_cache.py.
+      # Bind-mount them at runtime so the image stays small.
+      - ../data:/app/data
 
   web:
     build:
@@ -23,39 +29,15 @@ services:
     depends_on:
       - api
 
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: w3c
-      POSTGRES_PASSWORD: w3c
-      POSTGRES_DB: w3c_process
+  # Optional: local Ollama LLM. Skip the profile to point
+  # ``LLM_PROVIDER=openai-compatible`` at an external endpoint instead.
+  ollama:
+    image: ollama/ollama:latest
     ports:
-      - "5432:5432"
+      - "11434:11434"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7
-    ports:
-      - "6379:6379"
-
-  qdrant:
-    image: qdrant/qdrant:v1.12.5
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant-data:/qdrant/storage
-
-  vllm:
-    image: vllm/vllm-openai:latest
-    profiles: ["gpu"]
-    environment:
-      MODEL: ${LLM_MODEL:-Qwen/Qwen3-8B}
-    ports:
-      - "8001:8000"
-    command: ["--model", "${LLM_MODEL:-Qwen/Qwen3-8B}", "--host", "0.0.0.0"]
+      - ollama-data:/root/.ollama
+    profiles: ["llm"]
 
 volumes:
-  postgres-data:
-  qdrant-data:
+  ollama-data:

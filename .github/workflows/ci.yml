@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Don't pile up duplicate runs when a PR is force-pushed; just cancel
+# the prior one.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: API (pytest + ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+
+      - name: Install API dependencies
+        # The reranker is optional and pulls in ~3 GB of torch wheels.
+        # CI doesn't need it to assert the workflow contract — the
+        # cross-encoder falls back to the LLM reranker when absent.
+        run: |
+          grep -v -E "^(sentence-transformers|torch)" apps/api/requirements.txt > /tmp/req-ci.txt
+          pip install -r /tmp/req-ci.txt ruff
+
+      - name: Lint (ruff)
+        # Non-blocking until a baseline pass clears existing warnings.
+        # Once green, drop ``--exit-zero`` so violations fail the build.
+        run: ruff check apps/api --exit-zero
+
+      - name: Test (pytest)
+        working-directory: apps/api
+        run: pytest -q
+
+  web:
+    name: Web (tsc + lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install web dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Type-check
+        working-directory: apps/web
+        run: npx tsc --noEmit
+
+      - name: Lint
+        working-directory: apps/web
+        run: npx next lint
+        continue-on-error: true

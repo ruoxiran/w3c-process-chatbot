@@ -1,0 +1,50 @@
+# Files that should never enter a Docker build context. Without this,
+# ``COPY apps/api`` pulls in pycache + the 130MB embedding cache + the
+# venv, which makes builds slow and images bloated.
+
+# Python build artefacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node build artefacts
+node_modules/
+.next/
+dist/
+build/
+*.tsbuildinfo
+coverage/
+
+# Corpus + caches — bind-mounted at runtime, NOT baked into the image
+data/
+apps/api/data/
+reports/
+logs/
+
+# Secrets / local env
+.env
+.env.*
+.env.local
+.env.*.local
+.env.bak
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.bak
+.claude/
+.playwright-cli/
+
+# Git history isn't needed inside the image
+.git/
+.gitignore
+
+# Don't recursively copy the docker context into itself
+deploy/docker/Dockerfile*
