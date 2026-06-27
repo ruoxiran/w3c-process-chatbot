@@ -1,4 +1,4 @@
-"""Regression tests for the security-hardening guards added in round 6.
+"""Regression tests for the security and observability guards.
 
 Each test pins a specific guard so a future refactor can't silently
 remove it. None of these exercise the network — they hit the helper
@@ -7,8 +7,18 @@ function directly.
 
 from __future__ import annotations
 
+import json
+import logging
+
 import pytest
 
+from app.core.logging_setup import (
+    JsonFormatter,
+    log_event,
+    new_request_id,
+    set_request_id,
+    setup_logging,
+)
 from app.services import openai_compatible
 from app.services.cross_encoder_reranker import (
     MissingDependencyError,
@@ -75,3 +85,63 @@ def test_llm_provider_literal_rejects_unknown_values() -> None:
     Settings(llm_provider="ollama")
     Settings(llm_provider="openai-compatible")
     Settings(llm_provider="template")
+
+
+# ---------- Structured logging ---------------------------------------------
+
+
+def _capture_json_record(emit_fn) -> dict:
+    """Invoke ``emit_fn`` with a handler that captures one JSON record."""
+    captured: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(JsonFormatter().format(record))
+
+    test_logger = logging.getLogger(f"test.{new_request_id()}")
+    test_logger.addHandler(_CaptureHandler())
+    test_logger.setLevel(logging.INFO)
+    try:
+        emit_fn(test_logger)
+    finally:
+        for handler in list(test_logger.handlers):
+            test_logger.removeHandler(handler)
+    assert captured, "no log line was emitted"
+    return json.loads(captured[-1])
+
+
+def test_log_event_emits_structured_json_with_request_id() -> None:
+    set_request_id("abc123xyz789")
+    record = _capture_json_record(
+        lambda log: log_event(log, "retriever", duration_ms=42.1, citations=12)
+    )
+    assert record["request_id"] == "abc123xyz789"
+    assert record["stage"] == "retriever"
+    assert record["status"] == "ok"
+    assert record["duration_ms"] == 42.1
+    assert record["citations"] == 12
+
+
+def test_log_event_promotes_known_fields_and_prefixes_unknown_ones() -> None:
+    set_request_id("rid-known-unknown")
+    record = _capture_json_record(
+        lambda log: log_event(log, "smoke", model="gpt-4.1", top_k=8)
+    )
+    # ``model`` is a known structured field, so it stays at top level.
+    assert record["model"] == "gpt-4.1"
+    # ``top_k`` is unknown, so it lands as ``top_k`` (stripped of the
+    # ``ev_`` storage prefix) at top level — that's what the formatter
+    # does for any record attribute starting with ``ev_``.
+    assert record["top_k"] == 8
+
+
+def test_setup_logging_is_idempotent() -> None:
+    """A second call must not stack handlers — otherwise log lines get
+    duplicated every time the module reloads."""
+    setup_logging()
+    setup_logging()
+    setup_logging()
+    json_handlers = [
+        h for h in logging.getLogger().handlers if isinstance(h.formatter, JsonFormatter)
+    ]
+    assert len(json_handlers) == 1

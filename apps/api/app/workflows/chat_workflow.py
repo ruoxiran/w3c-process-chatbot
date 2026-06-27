@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -7,6 +8,7 @@ from datetime import datetime, timezone
 from typing import TypedDict
 
 from app.core.config import Settings
+from app.core.logging_setup import get_request_id, log_event, set_request_id
 from app.models.schemas import ChatRequest, ChatResponse, ClassifyResponse, Citation, CompiledContext, DraftContext, LLMRouterDecision, NextStep, ProcessState, EvidenceCoverage, SourceVersion, TaskPlan, W3CEntity, WorkflowStep
 from app.rag.retriever import Retriever
 from app.services.answering import build_grounded_answer, build_next_step_details, build_refusal
@@ -187,7 +189,27 @@ class ChatWorkflow:
         neither can be set.
         """
 
+        # Wall-clock anchor for per-stage timing in structured logs.
+        _stage_clock: dict[str, float] = {"_start": time.perf_counter()}
+        _request_start = _stage_clock["_start"]
+
         def _emit_stage(step: "WorkflowStep") -> None:
+            # One structured log line per completed workflow stage.
+            # ``duration_ms`` is wall time since the previous _record call —
+            # close enough to per-stage time without instrumenting each
+            # block separately.
+            now = time.perf_counter()
+            previous = _stage_clock.get("_last", _request_start)
+            _stage_clock["_last"] = now
+            try:
+                log_event(
+                    logger,
+                    step.id,
+                    status=step.status,
+                    duration_ms=(now - previous) * 1000.0,
+                )
+            except Exception:  # pragma: no cover - logging must never break the request
+                pass
             if stage_sink is None:
                 return
             try:
@@ -1041,7 +1063,15 @@ class ChatWorkflow:
         def push_stage(step: "WorkflowStep") -> None:
             event_queue.put(("stage", step))
 
+        # Capture the request id BEFORE entering the worker thread.
+        # ``threading.Thread`` does not inherit contextvars (unlike
+        # ``concurrent.futures.Executor.submit``), so without this the
+        # worker's structured log lines would all carry request_id="-"
+        # and lose correlation with the originating /chat/stream call.
+        parent_request_id = get_request_id()
+
         def worker() -> None:
+            set_request_id(parent_request_id)
             try:
                 response = self.run(
                     request, stream_sink=push_delta, stage_sink=push_stage

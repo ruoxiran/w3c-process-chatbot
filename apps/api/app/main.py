@@ -39,17 +39,51 @@ from app.models.schemas import (
 )
 from app.services.compiled_context import CompiledContextStore
 from app.services.feedback import FeedbackStore
+from app.core.logging_setup import (
+    get_request_id,
+    new_request_id,
+    set_request_id,
+    setup_logging,
+)
 from app.services.ollama import OllamaClient
 from app.services.openai_compatible import OpenAICompatibleClient
 from app.workflows.chat_workflow import ChatWorkflow, is_openai_compatible_provider
 
 
+setup_logging()
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
 # Endpoints that bypass the API-key gate.
 _AUTH_EXEMPT_PATHS = frozenset({"/health"})
+
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Stamp every request with a 12-char hex id and surface it back.
+
+    Sources the id from the ``X-Request-ID`` header if the caller sent
+    one (lets a fronting load balancer correlate its access logs with
+    ours); otherwise generates one. The id is stored in a contextvar
+    so ``logger`` records inside the request handler — including code
+    paths that don't take ``request`` as a parameter — pick it up
+    automatically. We also echo it back via the response header so a
+    user can quote it when reporting a bug.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        provided = request.headers.get("x-request-id", "").strip()
+        # Accept only hex / dash / alnum; longer values are truncated.
+        # Untrusted input goes into log lines so we don't want anything
+        # that breaks line-oriented log aggregation.
+        rid = "".join(
+            ch for ch in provided[:32] if ch.isalnum() or ch in "-_"
+        ) or new_request_id()
+        set_request_id(rid)
+        request.state.request_id = rid
+        response = await call_next(request)
+        response.headers["x-request-id"] = rid
+        return response
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
@@ -109,8 +143,10 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_handler := lambda r, e:
     {"detail": "Rate limit exceeded. Please retry shortly."}, status_code=429
 ))
 
-# Order matters: API-key auth runs FIRST, then rate limiting, then CORS.
-# Starlette processes middleware in reverse-add order, so add CORS last.
+# Order matters: request-id runs FIRST so every downstream log line —
+# including API-key rejections and rate-limit denials — gets stamped.
+# Then API-key, rate-limiting, CORS. Starlette processes middleware in
+# reverse-add order, so add the OUTERMOST one last.
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(APIKeyMiddleware, settings=settings)
 app.add_middleware(
@@ -120,6 +156,7 @@ app.add_middleware(
     allow_methods=settings.cors_methods,
     allow_headers=settings.cors_headers,
 )
+app.add_middleware(RequestIdMiddleware)
 
 
 @app.on_event("startup")
