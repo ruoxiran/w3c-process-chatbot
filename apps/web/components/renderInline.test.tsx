@@ -63,6 +63,23 @@ function toArray(nodes: ReactNode): ReactNode[] {
 }
 
 describe("renderInline", () => {
+  test("tolerates whitespace around the URL inside markdown link parens", () => {
+    // Models sometimes wrap the URL with leading or trailing
+    // whitespace, especially after a line break:
+    // ``[label]( https://… )``. The renderer must still produce an
+    // anchor with the trimmed URL — otherwise these render as inert
+    // literal text.
+    const nodes = toArray(renderInline(
+      "Open [the i18n tracker]( https://github.com/w3c/i18n-request/issues/new/choose ).",
+      [],
+    ));
+    const anchors = elementsOfType(nodes, "a");
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0].props.href).toBe(
+      "https://github.com/w3c/i18n-request/issues/new/choose",
+    );
+  });
+
   test("renders a safe markdown link as an <a> with the label text", () => {
     const nodes = toArray(renderInline(
       "File at [the i18n tracker](https://github.com/w3c/i18n-request/issues/new/choose).",

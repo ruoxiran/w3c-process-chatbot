@@ -164,8 +164,15 @@ _STRICT_FORMATTING_BLOCK = """- For "how do I do X" / "how to X" procedural ques
 # actually HURTS quality — they pad to fit the template instead of
 # answering the question. The safety/grounding rules above are
 # unchanged; only the formatting prescriptions become softer.
+#
+# EXCEPTION: the markdown-link rule for action surfaces stays here as
+# a top-level rule (not buried among many "do not" lines) because the
+# frontend renderer DEPENDS on it. A bare ``https://...`` URL in the
+# answer text shows up as plain text, not a clickable link. So even
+# in lighter mode this rule is non-negotiable.
 _LIGHTER_FORMATTING_BLOCK = """- Structure the answer the way the question warrants. Short for definitions, chronological numbered steps for "how do I X" workflows (start at the entry point — channel / URL / form / first action — not at an advanced feature just because its excerpt repeats the keyword most), prose for explanatory questions. Trust your judgement on length and depth; match the user's question, do not pad to a template.
 - For multi-step workflows, lean toward depth on each step — what to do, where (markdown-linked surface), what to include in the request, who reviews, what "done" looks like — but only include each detail when the cited excerpts actually support it. Concision beats false specificity.
+- LINK FORMAT (load-bearing — the frontend renderer reads this): every action URL you write MUST be in markdown link form ``[short label](url)``. For example ``[file an i18n review request](https://github.com/w3c/i18n-request/issues/new/choose)``, ``[Zakim chapter](https://www.w3.org/guide/meetings/zakim.html)``, ``[email the chairs](mailto:chairs@example.org)``. Never write a bare ``https://...`` URL or ``url=https://...`` in the answer — those render as inert plain text.
 - Add a Process-vs-Guidebook note only when the question asks about authority OR the two sources clearly conflict."""
 
 

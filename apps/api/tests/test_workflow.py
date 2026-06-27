@@ -492,6 +492,43 @@ def test_workflow_sends_lighter_prompt_to_external_api_providers() -> None:
     assert response.audit.get("prompt_mode") == "lighter"
 
 
+def test_workflow_linkifies_bare_action_urls_in_lighter_mode_output() -> None:
+    """Belt-and-suspenders: when the model emits a bare ``https://…``
+    URL instead of ``[label](url)`` markdown, the workflow post-pass
+    must wrap it so the frontend renders a clickable link. Only the
+    curated surface URLs for the intent are touched (never random
+    URLs from elsewhere in the answer)."""
+
+    class _RawUrlClient:
+        """Emits a bare GitHub URL — the failure mode we're guarding."""
+
+        def generate_answer(self, **kwargs):  # type: ignore[no-untyped-def]
+            from app.services.openai_compatible import OpenAICompatibleGeneration
+            return OpenAICompatibleGeneration(
+                text=(
+                    "File the request at https://github.com/w3c/i18n-request/issues/new/choose "
+                    "before requesting transition [S1]."
+                ),
+                model=kwargs["model"],
+            )
+
+    workflow = ChatWorkflow(
+        Settings(
+            llm_provider="openai-compatible",
+            openai_compatible_model="gpt-test",
+            w3c_api_enabled=False,
+        ),
+        openai_compatible_client=_RawUrlClient(),  # type: ignore[arg-type]
+    )
+    response = workflow.run(
+        ChatRequest(message="How do I file an i18n review request?", locale="en")
+    )
+    # The bare URL must be wrapped in markdown link syntax.
+    assert "[https://github.com/w3c/i18n-request/issues/new/choose](https://github.com/w3c/i18n-request/issues/new/choose)" in response.answer
+    # Audit records that the post-pass fired.
+    assert response.audit.get("linkified_bare_action_urls") is True
+
+
 def test_workflow_keeps_strict_prompt_for_ollama() -> None:
     """The strict (default) mode stays for local Ollama — template mode
     also defaults to lighter_mode=False since it never hits build_prompt

@@ -15,6 +15,7 @@ forward.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -274,3 +275,67 @@ def format_surfaces_for_prompt(surfaces: list[ActionSurface]) -> str:
             line = f"{line}\n    note: {surface.notes}"
         lines.append(line)
     return "\n".join(lines)
+
+
+# Pattern used by ``linkify_bare_action_urls`` to skip URLs that are
+# already inside markdown link syntax. A URL is considered "already
+# wrapped" when ``](`` appears immediately before it (the href slot of
+# ``[label](url)``). We can't use a negative lookbehind directly inside
+# the alternation pattern because the URLs differ in length, so we
+# build a single combined pattern with the lookbehind upfront.
+_MARKDOWN_HREF_PREFIX = re.compile(r"\]\(")
+
+
+def linkify_bare_action_urls(text: str, surfaces: list[ActionSurface]) -> str:
+    """Wrap bare action-surface URLs in the answer with ``[url](url)``.
+
+    Belt-and-suspenders fix for the case where the model emits the
+    raw ``https://github.com/...`` instead of ``[label](url)`` — the
+    frontend renders raw URLs as inert plain text, so a bare URL
+    shows up as an unclickable string. This post-pass scans the
+    finished answer for URLs from THIS request's surface list and
+    wraps them so the renderer turns them into clickable links.
+
+    Constraints:
+      * Only the curated surface URLs are touched — never arbitrary
+        URLs from elsewhere in the answer. Keeps the XSS surface at
+        zero and prevents corrupting citation URLs.
+      * Skips URLs already inside ``[label](url)`` syntax so we don't
+        double-wrap. Detected by ``](`` directly preceding the URL.
+      * Skips URLs that ARE the label part (``[https://…]``) by
+        requiring no ``[`` immediately before. Rare but possible.
+    """
+    if not text or not surfaces:
+        return text
+    urls = sorted(
+        {surface.url for surface in surfaces if surface.url},
+        key=len,
+        reverse=True,  # match longest first so a prefix URL doesn't beat its parent
+    )
+    if not urls:
+        return text
+    for url in urls:
+        if url not in text:
+            continue
+        # Walk the text, replacing each bare occurrence. We do this
+        # ourselves (instead of ``str.replace``) so we can check the
+        # immediately-preceding characters and skip already-wrapped
+        # instances.
+        out: list[str] = []
+        i = 0
+        url_len = len(url)
+        while True:
+            idx = text.find(url, i)
+            if idx == -1:
+                out.append(text[i:])
+                break
+            preceding = text[max(0, idx - 2): idx]
+            already_wrapped = preceding.endswith("](") or text[max(0, idx - 1): idx] == "["
+            out.append(text[i:idx])
+            if already_wrapped:
+                out.append(url)
+            else:
+                out.append(f"[{url}]({url})")
+            i = idx + url_len
+        text = "".join(out)
+    return text

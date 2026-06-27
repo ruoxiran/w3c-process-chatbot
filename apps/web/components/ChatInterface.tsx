@@ -1103,7 +1103,10 @@ export function renderInline(text: string, citations: Citation[]): ReactNode {
   // Order matters: the link pattern is tried BEFORE the citation
   // pattern so ``[label](url)`` doesn't get parsed as ``[label]``
   // followed by ``(url)``.
-  const pattern = /\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)\s]+)\)|\[S(\d+)\]/g;
+  // ``[label](url)`` — tolerate optional whitespace around the URL
+  // because models sometimes emit ``[label]( https://… )`` after a
+  // line wrap. Strict ``[^)\s]+`` would skip those.
+  const pattern = /\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\(\s*([^)\s]+)\s*\)|\[S(\d+)\]/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let key = 0;

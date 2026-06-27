@@ -22,7 +22,11 @@ from app.services.openai_compatible import OpenAICompatibleClient
 from app.services.process_state import extract_process_state
 from app.services.live_fetch import fetch_page_excerpt
 from app.services.scope import classify_scope
-from app.services.action_surfaces import format_surfaces_for_prompt, surfaces_for_intent
+from app.services.action_surfaces import (
+    format_surfaces_for_prompt,
+    linkify_bare_action_urls,
+    surfaces_for_intent,
+)
 from app.services.citation_verifier import verify_citations
 from app.services.cross_encoder_reranker import (
     CrossEncoderRerankResult,
@@ -1123,6 +1127,24 @@ class ChatWorkflow:
         # Defensive: explicitly drop the secret before this scope ends so any
         # future debugger / serializer can't reach it from the local frame.
         generation_client = None
+
+        # Belt-and-suspenders: if the model emitted a bare action URL
+        # instead of ``[label](url)`` markdown — common with lighter-
+        # prompt models that sometimes underweight the link rule — wrap
+        # those URLs so the frontend renders them as clickable links
+        # instead of inert plain text. Only the curated surface URLs
+        # for this intent are touched.
+        if retrieval.task_plan is not None:
+            try:
+                wrapped = linkify_bare_action_urls(
+                    answer,
+                    surfaces_for_intent(retrieval.task_plan.intent_type),
+                )
+                if wrapped != answer:
+                    audit["linkified_bare_action_urls"] = True
+                    answer = wrapped
+            except Exception:  # pragma: no cover - linkifier must never break the request
+                pass
 
         ctx.record(
             WorkflowStep(
