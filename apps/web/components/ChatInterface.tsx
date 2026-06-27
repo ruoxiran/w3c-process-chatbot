@@ -141,10 +141,12 @@ export function ChatInterface() {
         {
           onStage: (step) => {
             partialTrace.push(step);
-            // Build a temporary ChatResponse that has just the trace so far;
-            // it lets WorkflowPanel render each step as it lands without
-            // waiting for the full meta event.
-            const partial = {
+            // Build a partial ChatResponse carrying just the trace so
+            // far so WorkflowPanel can render each step as it lands.
+            // All other ChatResponse fields use safe empty defaults —
+            // no ``as unknown`` cast needed; TypeScript validates the
+            // shape directly.
+            const partial: ChatResponse = {
               answer: "",
               in_scope: true,
               citations: [],
@@ -156,8 +158,7 @@ export function ChatInterface() {
               confidence: 0,
               source_version: {},
               workflow_trace: [...partialTrace],
-              audit: {},
-            } as unknown as ChatResponse;
+            };
             setSelectedResponse(partial);
             setMessages((current) =>
               current.map((item) =>
@@ -168,7 +169,7 @@ export function ChatInterface() {
             );
           },
           onMeta: (meta) => {
-            const partial = { ...meta, answer: "" } as ChatResponse;
+            const partial: ChatResponse = { ...meta, answer: "" };
             setSelectedResponse(partial);
             setMessages((current) =>
               current.map((item) =>

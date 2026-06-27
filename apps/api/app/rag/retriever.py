@@ -506,13 +506,6 @@ def _cosine(left: dict[str, float], right: dict[str, float]) -> float:
     return numerator / (left_norm * right_norm)
 
 
-def _dense_cosine(left: list[float], right: list[float] | None) -> float:
-    if not left or not right or len(left) != len(right):
-        return 0.0
-    score = sum(l_value * r_value for l_value, r_value in zip(left, right, strict=True))
-    return max(0.0, score)
-
-
 def _embedding_text(value: str, max_chars: int = 1800) -> str:
     compact = " ".join(value.split())
     return compact[:max_chars]
@@ -998,21 +991,6 @@ def _ensure_topic_entrypoint_citations(query: str, citations: list[Citation], li
             continue
         seen[key] = len(output)
         output.append(citation)
-    return output
-
-
-def _merge_entrypoint_quote(citations: list[Citation], entrypoint: Citation) -> list[Citation]:
-    output: list[Citation] = []
-    entry_key = str(entrypoint.url).lower().rstrip("/")
-    for citation in citations:
-        key = str(citation.url).lower().rstrip("/")
-        if entry_key in key or key in entry_key:
-            quote = citation.quote or ""
-            if entrypoint.quote and entrypoint.quote not in quote:
-                quote = f"{quote} {entrypoint.quote}".strip()
-            output.append(citation.model_copy(update={"quote": quote}))
-        else:
-            output.append(citation)
     return output
 
 

@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import secrets
+from contextlib import asynccontextmanager
 from functools import lru_cache
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -130,12 +131,49 @@ def _rate_limit_key(request: Request) -> str:
 limiter = Limiter(key_func=_rate_limit_key, default_limits=[settings.rate_limit_default])
 
 
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    """Pre-warm corpus + dense + cross-encoder caches at startup.
+
+    Each load is idempotent under the retriever's double-checked
+    locking, so this is safe even if a reload picks up a corpus
+    refresh later. Failures are logged and swallowed — startup must
+    not crash because the corpus or model is temporarily missing;
+    the first user request will pay the cold-load instead.
+
+    Replaces the deprecated ``@app.on_event("startup")`` decorator;
+    the lifespan context manager is FastAPI's supported entrypoint
+    for both startup AND shutdown work.
+    """
+    try:
+        retriever = _workflow_singleton().retriever
+        retriever._load_index()  # noqa: SLF001 — intentional pre-warm
+        if settings.retrieval_dense_enabled:
+            retriever._load_dense_cache()  # noqa: SLF001 — intentional pre-warm
+        logger.info("retriever caches pre-warmed at startup")
+    except Exception as exc:  # pragma: no cover - startup best effort
+        logger.warning("retriever pre-warm failed; first request will pay the cost", exc_info=exc)
+
+    if settings.reranker_cross_encoder_enabled:
+        try:
+            from app.services.cross_encoder_reranker import _load_model  # noqa: SLF001
+
+            _load_model(settings.reranker_model)
+            logger.info("cross-encoder reranker pre-warmed at startup")
+        except Exception as exc:  # pragma: no cover - startup best effort
+            logger.info("cross-encoder pre-warm skipped: %s", exc)
+    yield
+    # No shutdown work today. HTTP clients (httpx.Client) are managed
+    # per-call so there are no long-lived sockets to close here.
+
+
 app = FastAPI(
     title="W3C Process Chatbot API",
     version="0.1.0",
     docs_url="/docs" if settings.expose_openapi_docs else None,
     redoc_url="/redoc" if settings.expose_openapi_docs else None,
     openapi_url="/openapi.json" if settings.expose_openapi_docs else None,
+    lifespan=_app_lifespan,
 )
 
 app.state.limiter = limiter
@@ -157,36 +195,6 @@ app.add_middleware(
     allow_headers=settings.cors_headers,
 )
 app.add_middleware(RequestIdMiddleware)
-
-
-@app.on_event("startup")
-def _warm_retriever_caches() -> None:
-    """Load the corpus index and (when enabled) the dense-embedding cache at
-    startup so the first user request doesn't pay the 5-10 second cold-load.
-
-    Each load is idempotent under the retriever's double-checked locking, so
-    this is safe even if reload picks up a corpus refresh later.
-    """
-    try:
-        retriever = _workflow_singleton().retriever
-        retriever._load_index()  # noqa: SLF001 — intentional pre-warm
-        if settings.retrieval_dense_enabled:
-            retriever._load_dense_cache()  # noqa: SLF001 — intentional pre-warm
-        logger.info("retriever caches pre-warmed at startup")
-    except Exception as exc:  # pragma: no cover - startup best effort
-        logger.warning("retriever pre-warm failed; first request will pay the cost", exc_info=exc)
-
-    # Optional: pre-load the cross-encoder reranker so the first user
-    # request doesn't pay the ~3 s model-load tax. Skipped silently if
-    # sentence-transformers isn't installed.
-    if settings.reranker_cross_encoder_enabled:
-        try:
-            from app.services.cross_encoder_reranker import _load_model  # noqa: SLF001 — intentional
-
-            _load_model(settings.reranker_model)
-            logger.info("cross-encoder reranker pre-warmed at startup")
-        except Exception as exc:  # pragma: no cover - startup best effort
-            logger.info("cross-encoder pre-warm skipped: %s", exc)
 
 
 @lru_cache
