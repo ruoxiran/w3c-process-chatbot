@@ -999,56 +999,18 @@ function ResponseDetails({ response }: { response: ChatResponse }) {
       <div className={`callout ${response.in_scope ? "success" : "warning"}`}>
         {response.in_scope ? "In scope: W3C Process workflow question" : "Out of scope"}
       </div>
-      {response.process_state ? <ProcessStateSummary response={response} /> : null}
+      {/* The ``Process state`` summary panel (workflow / intent / stage /
+          group / deliverable + risk-flag chips) used to render here, but
+          its extraction was wrong more often than right for non-
+          transition questions (e.g. "how to scribe?" was labelled
+          "Horizontal Review · REC → REC"). Removed from the UI; the
+          structured ``process_state`` field still flows through the
+          response for the workflow inspector and the LLM judge — it
+          just no longer surfaces as a misleading bottom-of-message
+          callout. */}
       {response.refusal_reason ? <p className="muted">{response.refusal_reason}</p> : null}
     </div>
   );
-}
-
-function ProcessStateSummary({ response }: { response: ChatResponse }) {
-  const state = response.process_state;
-  if (!state) return null;
-
-  const facts = [
-    ["Workflow", formatStateValue(state.likely_workflow)],
-    ["Intent", formatStateValue(state.intent)],
-    ["Stage", [state.current_stage, state.target_stage].filter(Boolean).join(" -> ") || "Not specified"],
-    ["Group", state.group_type || "Not specified"],
-    ["Deliverable", state.deliverable_type || "Not specified"]
-  ];
-
-  return (
-    <section className="state-summary" aria-label="Process state">
-      <div className="state-summary-head">
-        <h2>Process state</h2>
-        <span>{Math.round(state.confidence * 100)}%</span>
-      </div>
-      <dl>
-        {facts.map(([label, value]) => (
-          <div key={label}>
-            <dt>{label}</dt>
-            <dd>{value}</dd>
-          </div>
-        ))}
-      </dl>
-      {state.risk_flags.length ? (
-        <div className="state-tags" aria-label="Risk flags">
-          {state.risk_flags.map((risk) => (
-            <span key={risk}>{risk}</span>
-          ))}
-        </div>
-      ) : null}
-      {state.missing_information.length ? (
-        <p className="muted">
-          Missing: {state.missing_information.map(formatStateValue).join(", ")}
-        </p>
-      ) : null}
-    </section>
-  );
-}
-
-function formatStateValue(value: string) {
-  return value.replaceAll("_", " ");
 }
 
 function toChatHistory(messages: ConversationMessage[]): ChatTurn[] {

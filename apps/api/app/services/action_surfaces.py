@@ -159,6 +159,28 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
             label="W3C Workshops",
             url="https://www.w3.org/guide/meetings/workshops.html",
         ),
+        # Meeting-tooling surfaces — the W3C IRC bots that take
+        # attendance, manage the queue, and produce minutes. The
+        # corpus has dedicated chapters for each; these surfaces let
+        # the model wire its scribing answer to the operational pages
+        # ("how to invoke Zakim" / "how to start RRSAgent recording"
+        # / "scribe.perl post-processing").
+        ActionSurface(
+            label="Zakim IRC bot (queue + agenda + attendance)",
+            url="https://www.w3.org/guide/meetings/zakim.html",
+        ),
+        ActionSurface(
+            label="RRSAgent IRC bot (logs IRC + generates minutes)",
+            url="https://www.w3.org/guide/meetings/rrsagent.html",
+        ),
+        ActionSurface(
+            label="Scribe handbook (scribe.perl conventions)",
+            url="https://www.w3.org/2008/04/scribe.html",
+        ),
+        ActionSurface(
+            label="W3C IRC conventions",
+            url="https://www.w3.org/guide/meetings/irc.html",
+        ),
         ActionSurface(
             label="Open an operational issue for your group",
             notes="Use your group's own GitHub repository's issue tracker for spec-level discussion; the W3C Team for process questions.",

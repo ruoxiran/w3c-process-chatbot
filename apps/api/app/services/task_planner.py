@@ -146,7 +146,17 @@ def _intent_type(text: str) -> str:
         return "plan_or_complete_review"
     if _has(text, ["staff contact", "team contact", "liaison", "职责"]):
         return "coordinate_with_staff_contact"
-    if _has(text, ["chair", "meeting", "agenda", "minutes", "会议", "主席"]):
+    if _has(text, [
+        "chair", "meeting", "agenda", "minutes", "会议", "主席",
+        # Meeting tooling — IRC bots and the scribing toolchain are
+        # core to W3C meetings but the original keyword list missed
+        # them, so "how to scribe?" was falling through to
+        # advance_specification and retrieving REC-transition chunks
+        # instead of the dedicated zakim.html / rrsagent.html /
+        # scribe.html guide pages.
+        "scribe", "scribing", "zakim", "rrsagent", "irc", "irc bot",
+        "scribe.perl", "记录员", "会议记录",
+    ]):
         return "run_group_process"
     if _has(text, ["community group", "incubation", "cg ", "转入 working group"]):
         return "transfer_incubation_to_wg"
@@ -246,7 +256,19 @@ def _search_queries(
     elif intent_type == "coordinate_with_staff_contact":
         seed.extend(["Staff Contact Team Contact responsibilities", "Guidebook Staff Contact role"])
     elif intent_type == "run_group_process":
-        seed.extend(["W3C group meeting process chair minutes decision", "Guidebook chair meetings agenda minutes"])
+        seed.extend([
+            "W3C group meeting process chair minutes decision",
+            "Guidebook chair meetings agenda minutes",
+            # Tool-specific seeds so retrieval lands on the dedicated
+            # zakim.html / rrsagent.html / scribe.html guide pages
+            # when the user asks "how to scribe?", "what is Zakim?",
+            # "how do I queue with rrsagent?". Without these the
+            # generic meeting/minutes seeds drift to chapters that
+            # only mention scribing tangentially.
+            "Zakim IRC bot agenda queue start meeting take up",
+            "RRSAgent IRC bot record minutes log scribe.perl",
+            "scribe IRC bot scribe.perl meeting minutes record",
+        ])
     elif intent_type == "transfer_incubation_to_wg":
         seed.extend(["Community Group specification transfer Working Group incubation", "Guidebook CG transition Working Group"])
     elif intent_type == "handle_objection_or_appeal":

@@ -26,6 +26,32 @@ def test_task_planner_promotes_horizontal_review_to_first_class_workflow() -> No
     assert any("needs-resolution" in query.lower() for query in plan.search_queries)
 
 
+def test_task_planner_routes_scribing_questions_to_run_group_process() -> None:
+    """"how to scribe?" used to fall through to ``advance_specification``
+    because ``scribe`` wasn't in the run-group-process keyword list,
+    so retrieval went hunting for REC-transition chunks and missed
+    the dedicated zakim.html / rrsagent.html / scribe.html guide
+    pages entirely. Pin the fix so a future keyword-list refactor
+    doesn't drop scribing on the floor again."""
+    for query in [
+        "how to scribe?",
+        "how do I use Zakim?",
+        "what does RRSAgent do during a meeting?",
+        "scribe.perl conventions for IRC minutes",
+        "how to invite Zakim and RRSAgent to my meeting",
+    ]:
+        plan = plan_task(query)
+        assert plan.intent_type == "run_group_process", f"misclassified: {query!r}"
+    # The retrieval seeds for run_group_process must include tool-
+    # specific phrases so dense + lexical retrieval lands on the
+    # actual guide chapters, not generic meeting/minutes pages.
+    plan = plan_task("how to scribe?")
+    joined = " ".join(plan.search_queries).lower()
+    assert "zakim" in joined
+    assert "rrsagent" in joined
+    assert "scribe" in joined
+
+
 def test_task_planner_marks_draft_context_when_question_mentions_github_repo() -> None:
     plan = plan_task("Use the CSS Grid editor draft GitHub repo context to decide the next Process step.")
 
