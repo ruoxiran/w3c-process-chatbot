@@ -48,6 +48,21 @@ def test_workflow_returns_citations_for_process_question() -> None:
     assert response.evidence_coverage
 
 
+def test_workflow_audit_includes_degraded_field_empty_on_healthy_run() -> None:
+    """``audit["degraded"]`` is the canonical "what fell back" channel.
+    On a healthy template-mode run nothing should be in it; the field
+    exists so operators can distinguish "no degradation" (empty list)
+    from "field missing" (old build, can't tell)."""
+    response = ChatWorkflow(_test_settings()).run(
+        ChatRequest(message="What is a Working Draft?")
+    )
+    assert "degraded" in response.audit
+    assert isinstance(response.audit["degraded"], list)
+    # Template mode never calls external services, so degradation tags
+    # like w3c_api_unavailable / llm_generation_failed should not appear.
+    assert response.audit["degraded"] == []
+
+
 def test_workflow_returns_topic_specific_answers() -> None:
     workflow = ChatWorkflow(_test_settings())
 

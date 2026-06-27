@@ -37,6 +37,21 @@ from app.services.w3c_api import W3CAPIClient
 logger = logging.getLogger(__name__)
 
 
+# Set of llm_provider values that route through the OpenAI-compatible
+# client (everything else goes through the Ollama client). Centralised
+# so adding a new provider — say "anthropic" via an OpenAI-compatible
+# proxy — is a one-line change. The duplicate ad-hoc set literals that
+# used to live at each call site were a known source of router bugs.
+_OPENAI_COMPATIBLE_PROVIDERS: frozenset[str] = frozenset(
+    {"openai", "openai-compatible", "openrouter"}
+)
+
+
+def is_openai_compatible_provider(provider: str) -> bool:
+    """Public predicate exported for /v1/models in main.py."""
+    return provider in _OPENAI_COMPATIBLE_PROVIDERS
+
+
 class ChatState(TypedDict, total=False):
     request: ChatRequest
     classification: ClassifyResponse
@@ -113,18 +128,31 @@ class ChatWorkflow:
         )
         self.w3c_api_client = w3c_api_client or W3CAPIClient(settings)
         self.github_context_client = github_context_client or GitHubDraftContextClient(settings)
-        router_client = (
-            self.openai_compatible_client
-            if settings.llm_provider in {"openai", "openai-compatible", "openrouter"}
-            else self.ollama_client
-        )
-        self.llm_router = llm_router or LLMRouter(settings, router_client)
+        self.llm_router = llm_router or LLMRouter(settings, self._resolve_llm_client())
         self.compiled_context_store = compiled_context_store or CompiledContextStore(
             settings,
             retriever=self.retriever,
             w3c_api_client=self.w3c_api_client,
             github_context_client=self.github_context_client,
         )
+
+    def _resolve_llm_client(self) -> OllamaClient | OpenAICompatibleClient:
+        """Pick the client based on the configured ``llm_provider``.
+
+        The router, reranker, citation verifier, and generator paths
+        used to each carry their own copy of this branch. Centralising
+        it here means adding a new provider — say an Anthropic gateway
+        served via OpenAI-compatible shape — is one edit, not five.
+        """
+        if is_openai_compatible_provider(self.settings.llm_provider):
+            return self.openai_compatible_client
+        return self.ollama_client
+
+    def _default_model_id(self) -> str:
+        """Default model id matching the resolved client."""
+        if is_openai_compatible_provider(self.settings.llm_provider):
+            return self.settings.openai_compatible_model
+        return self.settings.llm_model
 
     def classify(self, request: ChatRequest) -> ClassifyResponse:
         history_text = "\n".join(turn.content for turn in request.history)
@@ -209,11 +237,7 @@ class ChatWorkflow:
         router_model = (
             request.model
             or self.settings.llm_router_model
-            or (
-                self.settings.openai_compatible_model
-                if self.settings.llm_provider in {"openai", "openai-compatible", "openrouter"}
-                else self.settings.llm_model
-            )
+            or self._default_model_id()
         )
 
         # Layer 3a: LLM router rescues questions that keyword matching missed
@@ -277,6 +301,19 @@ class ChatWorkflow:
             )
         ]
         override = request.provider_override
+        # ``degraded`` is the canonical "what fell back" channel. Each tag
+        # documents one mode where the workflow could not run its preferred
+        # path and silently used a worse one (LLM-reranker instead of cross
+        # encoder, lexical-only retrieval instead of dense, etc.). The
+        # specific *_error fields below are kept for backwards-compatibility
+        # with existing dashboards; ``degraded`` is what new tooling should
+        # read. Empty list = full health.
+        degraded: list[str] = []
+
+        def _degrade(tag: str) -> None:
+            if tag not in degraded:
+                degraded.append(tag)
+
         audit = {
             "workflow": "harness_v1",
             "matched_topics": classification.matched_topics,
@@ -287,10 +324,13 @@ class ChatWorkflow:
             "llm_provider": f"override:{override.kind}" if override else self.settings.llm_provider,
             "llm_model": override.model if override else _selected_model(request, self.settings),
             "used_contextual_query": used_contextual_query,
+            "degraded": degraded,
         }
         if router_decision:
             audit["llm_router"] = router_decision.model_dump(mode="json")
-            _record(trace, 
+            if router_decision.attempted and router_decision.error:
+                _degrade("router_failed")
+            _record(trace,
                 WorkflowStep(
                     id="llm_router",
                     label="LLM-assisted router",
@@ -372,6 +412,7 @@ class ChatWorkflow:
             )
         elif prefetch_error is not None:
             audit["w3c_api_error"] = prefetch_error
+            _degrade("w3c_api_unavailable")
             _record(trace, 
                 WorkflowStep(
                     id="w3c_api_resolver",
@@ -394,6 +435,7 @@ class ChatWorkflow:
                 )
             except Exception as exc:  # pragma: no cover - external service fallback
                 audit["w3c_api_error"] = type(exc).__name__
+                _degrade("w3c_api_unavailable")
                 logger.warning("W3C API entity resolution failed", exc_info=exc)
                 _record(trace, 
                     WorkflowStep(
@@ -431,6 +473,7 @@ class ChatWorkflow:
                 )
             except Exception as exc:  # pragma: no cover - external service fallback
                 audit["draft_context_error"] = type(exc).__name__
+                _degrade("draft_contexts_unavailable")
                 logger.warning("GitHub draft context resolution failed", exc_info=exc)
                 _record(trace, 
                     WorkflowStep(
@@ -457,6 +500,7 @@ class ChatWorkflow:
                 )
             except Exception as exc:  # pragma: no cover - local filesystem fallback
                 audit["compiled_context_error"] = type(exc).__name__
+                _degrade("compiled_context_unavailable")
                 logger.warning("Compiled context resolution failed", exc_info=exc)
                 _record(trace, 
                     WorkflowStep(
@@ -491,25 +535,22 @@ class ChatWorkflow:
         # to keep evals deterministic and offline.
         rewrite_variants: list[str] = []
         if self.settings.llm_provider != "template":
-            router_client = (
-                self.openai_compatible_client
-                if self.settings.llm_provider in {"openai", "openai-compatible", "openrouter"}
-                else self.ollama_client
-            )
             try:
                 rewrite_result = rewrite_query(
                     request.message,
                     settings=self.settings,
-                    client=router_client,
+                    client=self._resolve_llm_client(),
                     model=router_model,
                 )
                 rewrite_variants = rewrite_result.variants
                 audit["query_rewrites"] = rewrite_variants
                 if rewrite_result.error:
                     audit["query_rewrite_error"] = rewrite_result.error
+                    _degrade("query_rewriter_failed")
             except Exception as exc:  # pragma: no cover - non-fatal
                 logger.warning("Query rewriter failed; continuing with single-query retrieval", exc_info=exc)
                 audit["query_rewrite_error"] = type(exc).__name__
+                _degrade("query_rewriter_failed")
 
         # Pass the raw user message separately so the retriever can rank by
         # what the user actually asked instead of being biased by the 10+
@@ -568,17 +609,17 @@ class ChatWorkflow:
                     )
                 elif ce_result.skipped_reason and "unavailable" not in (ce_result.skipped_reason or ""):
                     audit["reranker_skipped"] = ce_result.skipped_reason
+                elif ce_result.skipped_reason and "unavailable" in ce_result.skipped_reason:
+                    # CE itself couldn't load (e.g. sentence-transformers missing
+                    # or model download failed). Record the degradation so
+                    # operators see we're running on the LLM reranker fallback.
+                    _degrade("cross_encoder_unavailable")
             if not used_cross_encoder and self.settings.llm_provider != "template":
-                router_client = (
-                    self.openai_compatible_client
-                    if self.settings.llm_provider in {"openai", "openai-compatible", "openrouter"}
-                    else self.ollama_client
-                )
                 rerank_result = rerank_citations(
                     request.message,
                     citations,
                     settings=self.settings,
-                    client=router_client,
+                    client=self._resolve_llm_client(),
                     model=router_model,
                 )
                 if rerank_result.reordered:
@@ -743,10 +784,11 @@ class ChatWorkflow:
                 audit["model_generation"] = model_generation
                 audit["model_error"] = "ProviderOverrideError"
                 audit["model_error_detail"] = str(exc)
+                _degrade("provider_override_rejected")
                 logger.info("Provider override rejected: %s", exc)
         elif generation_provider == "ollama":
             generation_client = self.ollama_client
-        elif generation_provider in {"openai", "openai-compatible", "openrouter"}:
+        elif is_openai_compatible_provider(generation_provider):
             generation_client = self.openai_compatible_client
 
         # Audit/log names use underscore form for backwards compatibility
@@ -817,6 +859,7 @@ class ChatWorkflow:
                 model_generation = "template_fallback"
                 audit["model_generation"] = model_generation
                 audit["model_error"] = type(exc).__name__
+                _degrade("llm_generation_failed")
                 logger.warning(
                     "Answer generation via %s failed; using template fallback",
                     provider_label,
@@ -849,16 +892,11 @@ class ChatWorkflow:
             and model_generation not in {"template", "template_fallback", "override_rejected"}
             and citations
         ):
-            verifier_client = (
-                self.openai_compatible_client
-                if self.settings.llm_provider in {"openai", "openai-compatible", "openrouter"}
-                else self.ollama_client
-            )
             verification = verify_citations(
                 answer,
                 citations,
                 settings=self.settings,
-                client=verifier_client,
+                client=self._resolve_llm_client(),
                 model=router_model,
             )
             if verification.stripped_pairs:
@@ -1101,7 +1139,7 @@ def _model_generation_detail(model_generation: str, model: str) -> str:
 def _selected_model(request: ChatRequest, settings: Settings) -> str:
     if request.model:
         return request.model
-    if settings.llm_provider in {"openai", "openai-compatible", "openrouter"}:
+    if is_openai_compatible_provider(settings.llm_provider):
         return settings.openai_compatible_model
     return settings.llm_model
 

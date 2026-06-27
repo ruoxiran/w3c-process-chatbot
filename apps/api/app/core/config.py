@@ -1,7 +1,22 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# Provider id values the workflow can resolve to a concrete LLM client.
+#   - ``ollama`` and the ``openai-compatible`` cluster (``openai`` /
+#     ``openai-compatible`` / ``openrouter``) route to a real LLM
+#   - ``template`` uses the deterministic offline answer-builder; eval
+#     fixtures and unit tests pin this so they don't hit the network
+LLMProviderId = Literal[
+    "ollama",
+    "openai",
+    "openai-compatible",
+    "openrouter",
+    "template",
+]
 
 
 class Settings(BaseSettings):
@@ -11,7 +26,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://w3c:w3c@localhost:5432/w3c_process"
     redis_url: str = "redis://localhost:6379/0"
     llm_base_url: str = "http://localhost:8001/v1"
-    llm_provider: str = "ollama"
+    llm_provider: LLMProviderId = "ollama"
     llm_model: str = "qwen3:8b"
     openai_compatible_base_url: str = "https://api.openai.com/v1"
     openai_compatible_api_key: str | None = None

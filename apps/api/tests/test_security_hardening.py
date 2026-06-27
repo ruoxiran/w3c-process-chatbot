@@ -55,3 +55,23 @@ def test_reranker_allowlist_rejects_unknown_models() -> None:
         _validate_model_name("attacker/malicious-reranker")
     with pytest.raises(MissingDependencyError, match="not in the allowlist"):
         _validate_model_name("../../etc/passwd")
+
+
+# ---------- Provider-id Literal --------------------------------------------
+
+
+def test_llm_provider_literal_rejects_unknown_values() -> None:
+    """``llm_provider`` is a Literal so typos like ``"openais"`` fail
+    at config load instead of silently routing to Ollama at runtime."""
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(llm_provider="openais")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        Settings(llm_provider="claude")  # type: ignore[arg-type]
+    # Spot-check the known-good values still work.
+    Settings(llm_provider="ollama")
+    Settings(llm_provider="openai-compatible")
+    Settings(llm_provider="template")

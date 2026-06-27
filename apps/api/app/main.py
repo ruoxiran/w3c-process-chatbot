@@ -41,7 +41,7 @@ from app.services.compiled_context import CompiledContextStore
 from app.services.feedback import FeedbackStore
 from app.services.ollama import OllamaClient
 from app.services.openai_compatible import OpenAICompatibleClient
-from app.workflows.chat_workflow import ChatWorkflow
+from app.workflows.chat_workflow import ChatWorkflow, is_openai_compatible_provider
 
 
 logger = logging.getLogger(__name__)
@@ -306,7 +306,7 @@ def models() -> ModelsResponse:
         except Exception as exc:  # pragma: no cover - external service fallback
             logger.warning("ollama list_models failed", exc_info=exc)
             return ModelsResponse(default_model=settings.llm_model, models=[], error=type(exc).__name__)
-    if settings.llm_provider in {"openai", "openai-compatible", "openrouter"}:
+    if is_openai_compatible_provider(settings.llm_provider):
         try:
             online_models = OpenAICompatibleClient(
                 settings.openai_compatible_base_url,
