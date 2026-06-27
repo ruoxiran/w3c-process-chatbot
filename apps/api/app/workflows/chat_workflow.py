@@ -1096,7 +1096,7 @@ class ChatWorkflow:
                     else:
                         model_generation = f"{provider_label}_empty_fallback"
                         audit["model_generation"] = model_generation
-            except Exception as exc:  # pragma: no cover - external service fallback
+            except Exception as exc:
                 model_generation = "template_fallback"
                 audit["model_generation"] = model_generation
                 audit["model_error"] = type(exc).__name__
@@ -1331,7 +1331,11 @@ class ChatWorkflow:
                     request, stream_sink=push_delta, stage_sink=push_stage
                 )
                 result_holder["response"] = response
-            except BaseException as exc:  # pragma: no cover - propagated to caller
+            except BaseException as exc:
+                # Propagated to the SSE caller via the ``error`` event in
+                # the generator's drain loop. We use BaseException so
+                # KeyboardInterrupt / SystemExit are also surfaced
+                # rather than silently swallowed inside the worker.
                 result_holder["error"] = exc
             finally:
                 event_queue.put(sentinel)
