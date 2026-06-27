@@ -122,7 +122,9 @@ class OpenAICompatibleClient:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            max_tokens=600,
+            # Bumped 600 → 1200 to match the new depth rule in the
+            # system prompt. See ollama.py for the rationale.
+            max_tokens=1200,
         )
         return OpenAICompatibleGeneration(text=_clean_model_text(text), model=model)
 
@@ -179,7 +181,9 @@ class OpenAICompatibleClient:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.1,
-            "max_tokens": 600,
+            # Streaming path matches the sync path budget; the depth
+            # rule applies to BOTH paths.
+            "max_tokens": 1200,
             "stream": True,
         }
         with httpx.stream(
