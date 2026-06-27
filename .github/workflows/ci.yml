@@ -64,6 +64,10 @@ jobs:
         working-directory: apps/web
         run: npx tsc --noEmit
 
+      - name: Test (vitest)
+        working-directory: apps/web
+        run: npm test
+
       - name: Lint
         working-directory: apps/web
         run: npx next lint

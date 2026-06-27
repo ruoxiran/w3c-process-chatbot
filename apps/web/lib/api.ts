@@ -391,7 +391,8 @@ export async function sendChatStream(
   return { ...meta, answer: accumulated } as ChatResponse;
 }
 
-function parseSseEvent(raw: string): { event: string; data: unknown } | null {
+// Exported for unit tests; not part of the public API surface.
+export function parseSseEvent(raw: string): { event: string; data: unknown } | null {
   const lines = raw.split("\n");
   let eventName = "message";
   const dataParts: string[] = [];
