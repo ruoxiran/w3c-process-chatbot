@@ -61,42 +61,119 @@ class ChatState(TypedDict, total=False):
 
 
 @dataclass
-class _PreparedAnswer:
-    """All workflow state produced before the final LLM generation call.
+class _RunContext:
+    """Mutable per-request state shared across workflow stages.
 
-    The pre-LLM phase of the workflow is identical for sync (``run``) and
-    streaming (``run_stream``) paths — both consume one of these. The two
-    methods only diverge in HOW they invoke the LLM (a single
-    ``generate_answer`` blocking call vs an iterator of token deltas).
-
-    Keeping this state in one bag means the assembly phase (workflow trace
-    tail + ``ChatResponse`` construction) is also single-source.
+    The run() method used to be a single 770-line block carrying its
+    state in closure variables (``trace``, ``audit``, ``degraded``,
+    ``_stage_clock``) and closure helpers (``_record``, ``_emit_stage``,
+    ``_degrade``). Lifting that state onto an object lets the stages
+    sit as methods on ``ChatWorkflow`` instead of nested closures, so
+    each one can be read, tested, and reasoned about in isolation.
     """
 
     request: ChatRequest
-    classification: ClassifyResponse
-    citations: list[Citation]
-    next_steps: list[str]
-    next_step_details: list[NextStep]
-    trace: list[WorkflowStep]
-    audit: dict
     source_version: SourceVersion
-    task_plan: TaskPlan | None
-    evidence_coverage: EvidenceCoverage | None
-    process_state: ProcessState | None
-    compiled_context: CompiledContext | None
+    trace: list[WorkflowStep] = field(default_factory=list)
+    audit: dict = field(default_factory=dict)
+    degraded: list[str] = field(default_factory=list)
+    stream_sink: object | None = None
+    stage_sink: object | None = None
+    _request_start: float = field(default_factory=time.perf_counter)
+    _last_stage_at: float = field(default_factory=time.perf_counter)
+
+    def record(self, step: "WorkflowStep") -> None:
+        """Append ``step`` to the trace AND emit a structured stage event.
+
+        SSE consumers see each completed workflow node as it lands,
+        not all at once at the end of the request. Per-stage timing
+        is the wall-clock delta since the previous record() call.
+        """
+        self.trace.append(step)
+        now = time.perf_counter()
+        previous = self._last_stage_at
+        self._last_stage_at = now
+        try:
+            log_event(
+                logger,
+                step.id,
+                status=step.status,
+                duration_ms=(now - previous) * 1000.0,
+            )
+        except Exception:  # pragma: no cover - logging must never break the request
+            pass
+        if self.stage_sink is None:
+            return
+        try:
+            self.stage_sink(step)  # type: ignore[misc]
+        except Exception:  # pragma: no cover - sink misbehaviour
+            logger.warning("stage_sink raised; continuing without progress events")
+
+    def degrade(self, tag: str) -> None:
+        """Record that the workflow fell back to a worse path on this run."""
+        if tag not in self.degraded:
+            self.degraded.append(tag)
+
+
+@dataclass
+class _RetrievalResult:
+    """Output of the retrieval phase.
+
+    Bundles every piece of evidence the generator and verifier need
+    plus the deterministic template answer (used as a fallback when
+    the LLM is unavailable or returns empty text).
+    """
+
+    task_plan: TaskPlan
+    routed_query: str
+    retrieval_query: str
     resolved_entities: list[W3CEntity]
     draft_contexts: list[DraftContext]
-    supplementary_context: str | None
+    compiled_context: CompiledContext | None
+    citations: list[Citation]
+    process_state: ProcessState
+    evidence_coverage: EvidenceCoverage
+    next_steps: list[str]
+    next_step_details: list[NextStep]
     template_answer: str
-    selected_model: str
-    generation_provider: str
-    provider_label: str
-    generation_client: object | None
-    safe_history: list
+    supplementary_context: str | None
     action_surfaces_text: str
-    initial_model_generation: str
+
+
+@dataclass
+class _GenerationResult:
+    """Output of the generation phase.
+
+    ``answer`` is the final text (LLM output or template fallback);
+    ``model_generation`` is the audit tag identifying which path
+    produced it ("ollama" / "openai_compatible_stream" /
+    "template_fallback" / "override_rejected" / ...).
+    """
+
+    answer: str
+    model_generation: str
+    selected_model: str
     router_model: str
+
+
+@dataclass
+class _ScopeResult:
+    """Output of the scope phase.
+
+    When ``refusal`` is non-None the workflow short-circuits — that's
+    the response to send back as-is. Otherwise the question is in
+    scope and the remaining stages should run with the rest of the
+    fields as their starting state.
+    """
+
+    refusal: ChatResponse | None = None
+    classification: ClassifyResponse | None = None
+    router_decision: LLMRouterDecision | None = None
+    contextual_query: str = ""
+    used_contextual_query: bool = False
+    prefetched_entities: list[W3CEntity] | None = None
+    prefetch_error: str | None = None
+    router_model: str = ""
 
 
 class ChatWorkflow:
@@ -167,78 +244,51 @@ class ChatWorkflow:
             confidence=decision.confidence,
         )
 
-    def run(
-        self,
-        request: ChatRequest,
-        *,
-        stream_sink: object | None = None,
-        stage_sink: object | None = None,
-    ) -> ChatResponse:
-        """Execute the full workflow and return the assembled ChatResponse.
+    def _run_scope_stage(self, ctx: _RunContext) -> _ScopeResult:
+        """Scope phase: classify, route, optionally short-circuit with a refusal.
 
-        When ``stream_sink`` is provided AND the resolved LLM client supports
-        token streaming, the workflow uses the streaming generation path and
-        invokes ``stream_sink(delta)`` for each text chunk as it arrives.
+        Three layers run, each able to override the previous one:
 
-        When ``stage_sink`` is provided, the workflow invokes
-        ``stage_sink(WorkflowStep)`` AS each pre-LLM stage completes — scope
-        classifier, task planner, entity resolver, retriever, reranker,
-        evidence coverage, process state. This lets the SSE consumer paint
-        the workflow inspector progressively rather than waiting for the
-        whole response. Both sinks are independent; either, both, or
-        neither can be set.
+          1. Keyword classifier on the raw message.
+          2. Keyword classifier on the conversation-context-enriched query
+             (for follow-up questions like "and how about X?").
+          3. LLM-assisted router for questions keyword matching missed,
+             and to validate weak keyword matches as false positives.
+
+        While the router runs we speculatively prefetch W3C API entities
+        in parallel so the retrieval phase can skip an extra network
+        round-trip when scope holds up.
+
+        Side-effects on ``ctx``:
+            * adds the ``scope_classifier`` (always) and ``llm_router``
+              (when attempted) trace steps
+            * initialises ``audit`` with workflow / provider / model /
+              router fields
+            * appends ``router_failed`` to ``degraded`` if the router
+              call errored
+            * when scope rejects the question, populates the refusal
+              trace tail (``retriever`` skipped + ``final_response``)
+              and returns it as ``_ScopeResult.refusal``
+
+        Returns ``_ScopeResult.refusal != None`` iff the workflow
+        should short-circuit. Otherwise the result carries the final
+        classification + router decision plus any speculative
+        prefetches for the retrieval stage.
         """
-
-        # Wall-clock anchor for per-stage timing in structured logs.
-        _stage_clock: dict[str, float] = {"_start": time.perf_counter()}
-        _request_start = _stage_clock["_start"]
-
-        def _emit_stage(step: "WorkflowStep") -> None:
-            # One structured log line per completed workflow stage.
-            # ``duration_ms`` is wall time since the previous _record call —
-            # close enough to per-stage time without instrumenting each
-            # block separately.
-            now = time.perf_counter()
-            previous = _stage_clock.get("_last", _request_start)
-            _stage_clock["_last"] = now
-            try:
-                log_event(
-                    logger,
-                    step.id,
-                    status=step.status,
-                    duration_ms=(now - previous) * 1000.0,
-                )
-            except Exception:  # pragma: no cover - logging must never break the request
-                pass
-            if stage_sink is None:
-                return
-            try:
-                stage_sink(step)
-            except Exception:  # pragma: no cover - sink misbehaviour
-                logger.warning("stage_sink raised; continuing without progress events")
-
-        def _record(trace_list: list, step: "WorkflowStep") -> None:
-            """Append ``step`` to the trace and emit a stage event.
-
-            Use instead of ``_record(trace, step)`` so SSE consumers see
-            each completed workflow node as it lands, not all at once
-            at the end of the request.
-            """
-            trace_list.append(step)
-            _emit_stage(step)
-
+        request = ctx.request
         contextual_query = build_contextual_query(request.message, request.history)
         used_contextual_query = contextual_query != request.message
         classification = self.classify(request)
         router_decision: LLMRouterDecision | None = None
 
-        # Layer 2: re-classify using the context-enriched query for follow-up questions.
-        # IMPORTANT: a follow-up marker alone (e.g. "how about X") does not justify
-        # inheriting scope from history — that lets unrelated topics ride along
-        # because PROCESS_TOPICS keywords in prior turns leak into contextual_query.
-        # Only flip to in_scope when the contextual query produces a STRONG match
-        # AND the original message is either purely referential (no new noun) or
-        # itself contains at least one weak topic word.
+        # Layer 2: re-classify using the context-enriched query for
+        # follow-up questions. IMPORTANT: a follow-up marker alone (e.g.
+        # "how about X") does not justify inheriting scope from history —
+        # that lets unrelated topics ride along because PROCESS_TOPICS
+        # keywords in prior turns leak into contextual_query. Only flip
+        # to in_scope when the contextual query produces a STRONG match
+        # AND the original message is either purely referential (no new
+        # noun) or itself contains at least one weak topic word.
         if not classification.in_scope and used_contextual_query:
             contextual_decision = classify_scope(contextual_query)
             message_decision = classify_scope(request.message)
@@ -262,11 +312,11 @@ class ChatWorkflow:
             or self._default_model_id()
         )
 
-        # Layer 3a: LLM router rescues questions that keyword matching missed
-        # Layer 3b: LLM router also validates weak keyword matches (confidence < 0.7) to filter false positives
-        # Optimization: when router needs to run AND classification is already weakly in-scope,
-        # speculatively prefetch W3C API entities in parallel — router hints only annotate
-        # the query for retrieval, they don't affect entity matching.
+        # Layer 3: LLM router rescues misses and validates weak matches.
+        # Optimization: when the router needs to run AND classification
+        # is already weakly in-scope, speculatively prefetch W3C API
+        # entities in parallel — router hints only annotate the query
+        # for retrieval, they don't affect entity matching.
         _needs_router = not classification.in_scope or classification.confidence < 0.7
         prefetched_entities: list[W3CEntity] | None = None
         prefetch_error: str | None = None
@@ -309,8 +359,10 @@ class ChatWorkflow:
                         injection_risk=classification.injection_risk,
                         confidence=router_decision.confidence,
                     )
-        source_version = SourceVersion(indexed_at=datetime.now(timezone.utc).isoformat())
-        trace: list[WorkflowStep] = [
+
+        # Scope classifier step always lands first — even on refusals, so
+        # operators can see why the workflow short-circuited.
+        ctx.trace.append(
             WorkflowStep(
                 id="scope_classifier",
                 label="Scope classifier",
@@ -321,38 +373,28 @@ class ChatWorkflow:
                     else "Question rejected because it is outside W3C Process scope."
                 ),
             )
-        ]
+        )
+
         override = request.provider_override
-        # ``degraded`` is the canonical "what fell back" channel. Each tag
-        # documents one mode where the workflow could not run its preferred
-        # path and silently used a worse one (LLM-reranker instead of cross
-        # encoder, lexical-only retrieval instead of dense, etc.). The
-        # specific *_error fields below are kept for backwards-compatibility
-        # with existing dashboards; ``degraded`` is what new tooling should
-        # read. Empty list = full health.
-        degraded: list[str] = []
-
-        def _degrade(tag: str) -> None:
-            if tag not in degraded:
-                degraded.append(tag)
-
-        audit = {
+        ctx.audit.update({
             "workflow": "harness_v1",
             "matched_topics": classification.matched_topics,
             "injection_risk": classification.injection_risk,
-            # Audit reflects what the workflow WILL run with. For user overrides
-            # we record kind+model only — never base_url and never api_key,
-            # so the audit blob is safe to surface or persist.
+            # Audit reflects what the workflow WILL run with. For user
+            # overrides we record kind+model only — never base_url and
+            # never api_key, so the audit blob is safe to surface or
+            # persist.
             "llm_provider": f"override:{override.kind}" if override else self.settings.llm_provider,
             "llm_model": override.model if override else _selected_model(request, self.settings),
             "used_contextual_query": used_contextual_query,
-            "degraded": degraded,
-        }
+            "degraded": ctx.degraded,
+        })
+
         if router_decision:
-            audit["llm_router"] = router_decision.model_dump(mode="json")
+            ctx.audit["llm_router"] = router_decision.model_dump(mode="json")
             if router_decision.attempted and router_decision.error:
-                _degrade("router_failed")
-            _record(trace,
+                ctx.degrade("router_failed")
+            ctx.record(
                 WorkflowStep(
                     id="llm_router",
                     label="LLM-assisted router",
@@ -367,34 +409,34 @@ class ChatWorkflow:
 
         if not classification.in_scope:
             answer = build_refusal(request.locale)
-            trace.extend(
-                [
-                    WorkflowStep(
-                        id="retriever",
-                        label="Authoritative source retrieval",
-                        status="skipped",
-                        detail="Retrieval was skipped because the question is outside scope.",
-                    ),
-                    WorkflowStep(
-                        id="final_response",
-                        label="Final conclusion",
-                        status="completed",
-                        detail=answer,
-                    ),
-                ]
-            )
-            return ChatResponse(
-                answer=answer,
-                in_scope=False,
-                confidence=0.98,
-                source_version=source_version,
-                refusal_reason=classification.reason,
-                workflow_trace=trace,
-                audit=audit,
+            ctx.trace.extend([
+                WorkflowStep(
+                    id="retriever",
+                    label="Authoritative source retrieval",
+                    status="skipped",
+                    detail="Retrieval was skipped because the question is outside scope.",
+                ),
+                WorkflowStep(
+                    id="final_response",
+                    label="Final conclusion",
+                    status="completed",
+                    detail=answer,
+                ),
+            ])
+            return _ScopeResult(
+                refusal=ChatResponse(
+                    answer=answer,
+                    in_scope=False,
+                    confidence=0.98,
+                    source_version=ctx.source_version,
+                    refusal_reason=classification.reason,
+                    workflow_trace=ctx.trace,
+                    audit=ctx.audit,
+                ),
             )
 
         if used_contextual_query:
-            _record(trace, 
+            ctx.record(
                 WorkflowStep(
                     id="query_rewriter",
                     label="Context resolver",
@@ -405,6 +447,121 @@ class ChatWorkflow:
                     ),
                 )
             )
+
+        return _ScopeResult(
+            classification=classification,
+            router_decision=router_decision,
+            contextual_query=contextual_query,
+            used_contextual_query=used_contextual_query,
+            prefetched_entities=prefetched_entities,
+            prefetch_error=prefetch_error,
+            router_model=router_model,
+        )
+
+    def run(
+        self,
+        request: ChatRequest,
+        *,
+        stream_sink: object | None = None,
+        stage_sink: object | None = None,
+    ) -> ChatResponse:
+        """Execute the full workflow and return the assembled ChatResponse.
+
+        When ``stream_sink`` is provided AND the resolved LLM client supports
+        token streaming, the workflow uses the streaming generation path and
+        invokes ``stream_sink(delta)`` for each text chunk as it arrives.
+
+        When ``stage_sink`` is provided, the workflow invokes
+        ``stage_sink(WorkflowStep)`` AS each pre-LLM stage completes — scope
+        classifier, task planner, entity resolver, retriever, reranker,
+        evidence coverage, process state. This lets the SSE consumer paint
+        the workflow inspector progressively rather than waiting for the
+        whole response. Both sinks are independent; either, both, or
+        neither can be set.
+        """
+
+        source_version = SourceVersion(indexed_at=datetime.now(timezone.utc).isoformat())
+        ctx = _RunContext(
+            request=request,
+            source_version=source_version,
+            stream_sink=stream_sink,
+            stage_sink=stage_sink,
+        )
+        scope = self._run_scope_stage(ctx)
+        if scope.refusal is not None:
+            return scope.refusal
+
+        retrieval = self._run_retrieval_stage(ctx, scope)
+        generation = self._run_generation_stage(ctx, scope, retrieval)
+
+        return self._run_verification_stage(
+            ctx,
+            answer=generation.answer,
+            citations=retrieval.citations,
+            model_generation=generation.model_generation,
+            router_model=generation.router_model,
+            classification=scope.classification,
+            next_steps=retrieval.next_steps,
+            next_step_details=retrieval.next_step_details,
+            task_plan=retrieval.task_plan,
+            evidence_coverage=retrieval.evidence_coverage,
+            process_state=retrieval.process_state,
+            compiled_context=retrieval.compiled_context,
+            resolved_entities=retrieval.resolved_entities,
+            draft_contexts=retrieval.draft_contexts,
+        )
+
+    def _run_retrieval_stage(
+        self, ctx: _RunContext, scope: _ScopeResult
+    ) -> _RetrievalResult:
+        """Retrieval phase: plan, resolve, retrieve, rerank, evidence-check.
+
+        Steps in order:
+            1. Task planner — turns the routed query into a structured
+               intent (advance_specification / file_review / ...).
+            2. W3C API entity resolver — uses the prefetch from the
+               scope phase when available, otherwise issues a new call.
+            3. GitHub draft + compiled context resolvers in parallel
+               (network + filesystem; independent).
+            4. Query augmentation with entity + draft hints.
+            5. Optional LLM query rewriter (multi-query expansion;
+               skipped in template mode for deterministic evals).
+            6. Hybrid retrieval over the corpus.
+            7. Reranker — cross-encoder when available, falls back to
+               LLM-as-reranker. Skipped silently for <4 candidates.
+            8. Process state extraction + evidence coverage check.
+            9. Optional targeted second-pass retrieval when coverage
+               flags missing evidence.
+           10. Optional live page fetch when coverage is still
+               insufficient and live_fetch is enabled.
+           11. Build the deterministic template answer (used as the
+               fallback when the LLM is unavailable).
+
+        All trace events and audit fields land on ``ctx`` as side
+        effects. Degradations are recorded via ``ctx.degrade`` so the
+        ``audit["degraded"]`` channel stays accurate.
+        """
+        request = ctx.request
+        classification = scope.classification
+        router_decision = scope.router_decision
+        contextual_query = scope.contextual_query
+        prefetched_entities = scope.prefetched_entities
+        prefetch_error = scope.prefetch_error
+        router_model = scope.router_model
+        audit = ctx.audit
+
+        # Shim for the still-inline trace-emission style copied from the
+        # legacy method body. Lets the (large) block below stay
+        # textually identical to the pre-refactor version — easier to
+        # diff-review than a wholesale rewrite. Future cleanup can
+        # convert these to direct ``ctx.record`` calls.
+        def _record(_unused_trace_list, step: "WorkflowStep") -> None:
+            ctx.record(step)
+
+        def _degrade(tag: str) -> None:
+            ctx.degrade(tag)
+
+        trace = ctx.trace  # alias used by legacy block below
 
         routed_query = _router_augmented_query(contextual_query, router_decision)
         task_plan = plan_task(routed_query, request.history)
@@ -775,10 +932,77 @@ class ChatWorkflow:
             compiled_context=compiled_context,
         )
         next_step_details = build_next_step_details(routed_query, citations, next_steps, compiled_context=compiled_context)
-        # When the user supplies a per-request provider override we use THEIR
-        # endpoint and model id; otherwise we fall back to the server defaults.
-        # The api_key never leaves this function — it is consumed by the
-        # one-shot client and intentionally never written to ``audit``.
+        # Resolve concrete W3C action surfaces (issue trackers, mailing lists,
+        # forms) for this intent so the model can end each step with a
+        # "do X at Y" instruction instead of vague guidance.
+        action_surfaces_text = format_surfaces_for_prompt(
+            surfaces_for_intent(task_plan.intent_type if task_plan else None)
+        )
+        if action_surfaces_text:
+            audit["action_surfaces_intent"] = task_plan.intent_type if task_plan else None
+
+        return _RetrievalResult(
+            task_plan=task_plan,
+            routed_query=routed_query,
+            retrieval_query=retrieval_query,
+            resolved_entities=resolved_entities,
+            draft_contexts=draft_contexts,
+            compiled_context=compiled_context,
+            citations=citations,
+            process_state=process_state,
+            evidence_coverage=evidence_coverage,
+            next_steps=next_steps,
+            next_step_details=next_step_details,
+            template_answer=answer,
+            supplementary_context=supplementary_context,
+            action_surfaces_text=action_surfaces_text,
+        )
+
+    def _run_generation_stage(
+        self,
+        ctx: _RunContext,
+        scope: _ScopeResult,
+        retrieval: _RetrievalResult,
+    ) -> _GenerationResult:
+        """Generation phase: prompt assembly + LLM call (sync or stream).
+
+        Three paths are possible depending on configuration and what
+        the caller supplied:
+
+          * **override**: the request carries a per-request
+            ProviderOverride (user's own OpenAI-compatible / Ollama
+            endpoint). A one-shot client is built; the api_key is
+            consumed and never written to ``audit``.
+          * **stream**: ``ctx.stream_sink`` is set AND the resolved
+            client exposes ``stream_answer``. Each token delta is
+            forwarded to the sink as it arrives; the final answer is
+            the cleaned concatenation.
+          * **sync**: a single ``generate_answer`` blocking call.
+
+        On any LLM exception (timeout, 500, unsupported model, ...)
+        we fall back to ``retrieval.template_answer`` — the
+        deterministic, citation-grounded answer the retrieval phase
+        already built. ``audit["degraded"]`` gets the
+        ``llm_generation_failed`` tag so operators see the path that
+        served the user.
+
+        Returns the final answer text + the ``model_generation`` audit
+        tag identifying which path produced it. Also appends the
+        ``answer_generator`` trace step as a side effect.
+        """
+        request = ctx.request
+        classification = scope.classification
+        router_model = scope.router_model
+        override = request.provider_override
+
+        audit = ctx.audit
+        answer = retrieval.template_answer
+        citations = retrieval.citations
+
+        # When the user supplies a per-request provider override we use
+        # THEIR endpoint and model id; otherwise the server defaults.
+        # The api_key never leaves this function — it is consumed by
+        # the one-shot client and intentionally never written to audit.
         if override is not None:
             selected_model = override.model
             generation_provider = override.kind
@@ -789,15 +1013,15 @@ class ChatWorkflow:
             audit["model_provider_source"] = "default"
         model_generation = "template"
 
-        # When injection language is detected we throw away the conversation
-        # history before handing it to the model. The audit field already
-        # records that injection was suspected; this is the enforcement that
-        # makes the safety_note actually safe.
+        # When injection language is detected we throw away the
+        # conversation history before handing it to the model. The
+        # audit field already records that injection was suspected;
+        # this is the enforcement that makes the safety_note safe.
         safe_history = [] if classification.injection_risk else request.history
 
-        # Resolve which client handles this request. Override clients are
-        # built per-request and never cached.
-        generation_client = None
+        # Resolve which client handles this request. Override clients
+        # are built per-request and never cached.
+        generation_client: object | None = None
         if override is not None:
             try:
                 generation_client = build_override_client(override, self.settings)
@@ -806,7 +1030,7 @@ class ChatWorkflow:
                 audit["model_generation"] = model_generation
                 audit["model_error"] = "ProviderOverrideError"
                 audit["model_error_detail"] = str(exc)
-                _degrade("provider_override_rejected")
+                ctx.degrade("provider_override_rejected")
                 logger.info("Provider override rejected: %s", exc)
         elif generation_provider == "ollama":
             generation_client = self.ollama_client
@@ -816,14 +1040,9 @@ class ChatWorkflow:
         # Audit/log names use underscore form for backwards compatibility
         # with existing tests, logs, and eval cases.
         provider_label = generation_provider.replace("-", "_")
-        # Resolve concrete W3C action surfaces (issue trackers, mailing lists,
-        # forms) for this intent so the model can end each step with a
-        # "do X at Y" instruction instead of vague guidance.
-        action_surfaces_text = format_surfaces_for_prompt(
-            surfaces_for_intent(task_plan.intent_type if task_plan else None)
-        )
-        if action_surfaces_text:
-            audit["action_surfaces_intent"] = task_plan.intent_type if task_plan else None
+
+        stream_sink = ctx.stream_sink
+
         if generation_client is not None:
             generation_kwargs = dict(
                 model=selected_model,
@@ -831,35 +1050,35 @@ class ChatWorkflow:
                 locale=request.locale,
                 citations=citations,
                 fallback_answer=answer,
-                fallback_next_steps=next_steps,
+                fallback_next_steps=retrieval.next_steps,
                 history=safe_history,
-                entities=resolved_entities,
-                task_plan=task_plan,
-                process_state=process_state,
-                evidence_coverage=evidence_coverage,
-                draft_contexts=draft_contexts,
-                compiled_context=compiled_context,
-                supplementary_context=supplementary_context,
-                action_surfaces_text=action_surfaces_text,
+                entities=retrieval.resolved_entities,
+                task_plan=retrieval.task_plan,
+                process_state=retrieval.process_state,
+                evidence_coverage=retrieval.evidence_coverage,
+                draft_contexts=retrieval.draft_contexts,
+                compiled_context=retrieval.compiled_context,
+                supplementary_context=retrieval.supplementary_context,
+                action_surfaces_text=retrieval.action_surfaces_text,
             )
             stream_supported = stream_sink is not None and hasattr(generation_client, "stream_answer")
             try:
                 if stream_supported:
-                    # Real-token streaming path. Each delta is forwarded to
-                    # the sink as it arrives; the assembled answer is the
-                    # concatenation cleaned with the same harness post-
-                    # processing as the sync path.
+                    # Real-token streaming path. Each delta is forwarded
+                    # to the sink as it arrives; the assembled answer
+                    # is the concatenation cleaned with the same
+                    # harness post-processing as the sync path.
                     from app.services.ollama import _clean_model_text  # local to avoid moving import to top
 
                     chunks: list[str] = []
-                    for delta in generation_client.stream_answer(**generation_kwargs):
+                    for delta in generation_client.stream_answer(**generation_kwargs):  # type: ignore[union-attr]
                         if delta:
                             chunks.append(delta)
                             try:
-                                stream_sink(delta)
+                                stream_sink(delta)  # type: ignore[misc]
                             except Exception:  # pragma: no cover - sink misbehaviour
                                 logger.warning("stream_sink raised; continuing without forwarding deltas")
-                                stream_sink = None  # type: ignore[assignment]
+                                stream_sink = None
                     streamed_text = _clean_model_text("".join(chunks))
                     if streamed_text:
                         answer = streamed_text
@@ -869,7 +1088,7 @@ class ChatWorkflow:
                         model_generation = f"{provider_label}_stream_empty_fallback"
                         audit["model_generation"] = model_generation
                 else:
-                    generation = generation_client.generate_answer(**generation_kwargs)
+                    generation = generation_client.generate_answer(**generation_kwargs)  # type: ignore[union-attr]
                     if generation.text:
                         answer = generation.text
                         model_generation = provider_label
@@ -881,7 +1100,7 @@ class ChatWorkflow:
                 model_generation = "template_fallback"
                 audit["model_generation"] = model_generation
                 audit["model_error"] = type(exc).__name__
-                _degrade("llm_generation_failed")
+                ctx.degrade("llm_generation_failed")
                 logger.warning(
                     "Answer generation via %s failed; using template fallback",
                     provider_label,
@@ -893,7 +1112,7 @@ class ChatWorkflow:
         # future debugger / serializer can't reach it from the local frame.
         generation_client = None
 
-        _record(trace, 
+        ctx.record(
             WorkflowStep(
                 id="answer_generator",
                 label="Answer generation",
@@ -903,12 +1122,47 @@ class ChatWorkflow:
             )
         )
 
-        # Post-generation citation verification: for each ``[Sn]`` tag in the
-        # answer, check that the cited excerpt actually supports the
-        # surrounding claim. Strip tags that fail verification — the claim
-        # stays, but it's no longer falsely attributed. Skipped in template
-        # mode (eval), when the answer came from template fallback, or when
-        # no LLM client is available.
+        return _GenerationResult(
+            answer=answer,
+            model_generation=model_generation,
+            selected_model=selected_model,
+            router_model=router_model,
+        )
+
+    def _run_verification_stage(
+        self,
+        ctx: _RunContext,
+        *,
+        answer: str,
+        citations: list[Citation],
+        model_generation: str,
+        router_model: str,
+        classification: ClassifyResponse,
+        next_steps: list[str],
+        next_step_details: list[NextStep],
+        task_plan: TaskPlan | None,
+        evidence_coverage: EvidenceCoverage | None,
+        process_state: ProcessState | None,
+        compiled_context: CompiledContext | None,
+        resolved_entities: list[W3CEntity],
+        draft_contexts: list[DraftContext],
+    ) -> ChatResponse:
+        """Citation-verifier + injection-guard + final assembly.
+
+        Runs the LLM-backed citation verifier (post-generation) to
+        strip ``[Sn]`` tags whose excerpts don't actually support the
+        surrounding claim. The claim text is preserved; only the
+        misleading attribution is removed. Skipped in template mode,
+        when the answer came from a template fallback, or when there
+        are no citations to verify.
+
+        If the scope phase flagged the question as injection-risk we
+        also append a visible ``injection_guard`` trace step so users
+        can see why their custom claims weren't treated as Process
+        authority.
+
+        Returns the assembled ``ChatResponse`` ready to send.
+        """
         if (
             self.settings.llm_provider != "template"
             and model_generation not in {"template", "template_fallback", "override_rejected"}
@@ -923,11 +1177,11 @@ class ChatWorkflow:
             )
             if verification.stripped_pairs:
                 answer = verification.answer
-                audit["citation_verifier"] = {
+                ctx.audit["citation_verifier"] = {
                     "model": verification.model,
                     "stripped_count": len(verification.stripped_pairs),
                 }
-                _record(trace, 
+                ctx.record(
                     WorkflowStep(
                         id="citation_verifier",
                         label="Citation verifier",
@@ -939,11 +1193,11 @@ class ChatWorkflow:
                     )
                 )
             elif verification.skipped_reason:
-                audit["citation_verifier_skipped"] = verification.skipped_reason
+                ctx.audit["citation_verifier_skipped"] = verification.skipped_reason
 
         if classification.injection_risk:
-            audit["safety_note"] = "Potential prompt injection detected; answer constrained to trusted sources."
-            _record(trace, 
+            ctx.audit["safety_note"] = "Potential prompt injection detected; answer constrained to trusted sources."
+            ctx.record(
                 WorkflowStep(
                     id="injection_guard",
                     label="Prompt-injection guard",
@@ -963,9 +1217,9 @@ class ChatWorkflow:
             compiled_context=compiled_context,
             resolved_entities=resolved_entities,
             draft_contexts=draft_contexts,
-            source_version=source_version,
-            trace=trace,
-            audit=audit,
+            source_version=ctx.source_version,
+            trace=ctx.trace,
+            audit=ctx.audit,
         )
 
     def _finalize_in_scope_response(
