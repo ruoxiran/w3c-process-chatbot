@@ -254,11 +254,13 @@ class FakeLLMRouter:
 class FakeOpenAICompatibleClient:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.last_kwargs: dict = {}
 
     def generate_answer(self, **kwargs):  # type: ignore[no-untyped-def]
         from app.services.openai_compatible import OpenAICompatibleGeneration
 
         self.calls.append(kwargs["model"])
+        self.last_kwargs = kwargs
         return OpenAICompatibleGeneration(
             text="Online model grounded answer with transition guidance [S1].",
             model=kwargs["model"],
@@ -467,6 +469,40 @@ def test_workflow_uses_openai_compatible_provider_when_configured() -> None:
     assert client.calls == ["gpt-test"]
     answer_step = next(step for step in response.workflow_trace if step.id == "answer_generator")
     assert "OpenAI-compatible model gpt-test" in answer_step.detail
+
+
+def test_workflow_sends_lighter_prompt_to_external_api_providers() -> None:
+    """External token-API providers (OpenAI / Kimi / OpenRouter) get the
+    lighter prompt — strict formatting rules are swapped for "use your
+    judgement". Local Ollama still gets the strict prompt because it
+    needs the structure spelled out."""
+    client = FakeOpenAICompatibleClient()
+    workflow = ChatWorkflow(
+        Settings(
+            llm_provider="openai-compatible",
+            openai_compatible_model="gpt-test",
+            w3c_api_enabled=False,
+        ),
+        openai_compatible_client=client,  # type: ignore[arg-type]
+    )
+    response = workflow.run(
+        ChatRequest(message="What should a CSS spec do next from CR to REC?", locale="en")
+    )
+    assert client.last_kwargs.get("lighter_mode") is True
+    assert response.audit.get("prompt_mode") == "lighter"
+
+
+def test_workflow_keeps_strict_prompt_for_ollama() -> None:
+    """The strict (default) mode stays for local Ollama — template mode
+    also defaults to lighter_mode=False since it never hits build_prompt
+    via these code paths."""
+    response = ChatWorkflow(_test_settings()).run(
+        ChatRequest(message="What is a Working Draft?")
+    )
+    # Template provider doesn't even go through build_prompt, so
+    # ``prompt_mode`` is not set on the audit — distinct from the
+    # explicit "lighter" tag above.
+    assert response.audit.get("prompt_mode") is None
 
 
 def test_workflow_runs_targeted_retrieval_when_guide_evidence_is_missing() -> None:

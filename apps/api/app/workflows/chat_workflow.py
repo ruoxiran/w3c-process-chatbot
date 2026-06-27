@@ -1044,6 +1044,17 @@ class ChatWorkflow:
         stream_sink = ctx.stream_sink
 
         if generation_client is not None:
+            # Trust mode: external token-API providers (OpenAI, Kimi/
+            # moonshot, OpenRouter, ...) get the lighter prompt with
+            # softer formatting prescriptions. The safety + grounding
+            # rules are unchanged; only the format-policing block
+            # (numbered-list incrementing, no bold-on-labels, the
+            # 5-sub-bullet template) is swapped for a single "use
+            # your judgement" line. Local Ollama keeps the strict
+            # prompt because it needs the structure spelled out.
+            lighter_mode = is_openai_compatible_provider(generation_provider)
+            if lighter_mode:
+                audit["prompt_mode"] = "lighter"
             generation_kwargs = dict(
                 model=selected_model,
                 question=request.message,
@@ -1060,6 +1071,7 @@ class ChatWorkflow:
                 compiled_context=retrieval.compiled_context,
                 supplementary_context=retrieval.supplementary_context,
                 action_surfaces_text=retrieval.action_surfaces_text,
+                lighter_mode=lighter_mode,
             )
             stream_supported = stream_sink is not None and hasattr(generation_client, "stream_answer")
             try:

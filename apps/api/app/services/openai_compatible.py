@@ -92,6 +92,7 @@ class OpenAICompatibleClient:
         compiled_context: CompiledContext | None = None,
         supplementary_context: str | None = None,
         action_surfaces_text: str = "",
+        lighter_mode: bool = False,
     ) -> OpenAICompatibleGeneration:
         prompt = build_prompt(
             question=question,
@@ -108,6 +109,7 @@ class OpenAICompatibleClient:
             compiled_context=compiled_context,
             supplementary_context=supplementary_context,
             action_surfaces_text=action_surfaces_text,
+            lighter_mode=lighter_mode,
         )
         text = self._chat(
             model=model,
@@ -146,6 +148,7 @@ class OpenAICompatibleClient:
         compiled_context: CompiledContext | None = None,
         supplementary_context: str | None = None,
         action_surfaces_text: str = "",
+        lighter_mode: bool = False,
     ) -> Iterator[str]:
         """Yield raw text deltas from the chat completions streaming API.
 
@@ -167,6 +170,7 @@ class OpenAICompatibleClient:
             compiled_context=compiled_context,
             supplementary_context=supplementary_context,
             action_surfaces_text=action_surfaces_text,
+            lighter_mode=lighter_mode,
         )
         payload: dict[str, object] = {
             "model": model,
