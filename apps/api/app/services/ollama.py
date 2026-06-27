@@ -304,13 +304,33 @@ def _format_history(history: list[ChatTurn]) -> str:
 def _format_entities(entities: list[W3CEntity]) -> str:
     if not entities:
         return "(No strong public W3C API entity match.)"
+    # Local import — keeps the terminology module independent of the
+    # prompt builder; avoids a circular at module-load time.
+    from app.services.w3c_terminology import (
+        canonical_maturity_stage,
+        next_recommendation_track_stage,
+    )
+
     lines = []
     for entity in entities[:5]:
+        # Derived hints: turn the W3C API's user-facing ``status``
+        # ("Candidate Recommendation Snapshot") into the canonical 2-3
+        # letter Process stage (``CR``) AND the next track stage so
+        # the model can write "your spec is currently in CR; the next
+        # gate is PR" without re-deriving that mapping every time.
+        canonical_stage = canonical_maturity_stage(entity.status)
+        next_stage = next_recommendation_track_stage(canonical_stage)
         bits = [
             f"type={entity.entity_type}",
             f"title={entity.title}",
             f"shortname={entity.shortname or '(none)'}",
             f"status={entity.status or '(unknown)'}",
+        ]
+        if canonical_stage:
+            bits.append(f"maturity_stage={canonical_stage}")
+        if next_stage:
+            bits.append(f"next_track_stage={next_stage}")
+        bits.extend([
             f"latest_version_date={entity.latest_version_date or '(unknown)'}",
             f"group_type={entity.group_type or '(unknown)'}",
             f"deliverers={', '.join(entity.deliverers) or '(unknown)'}",
@@ -318,7 +338,7 @@ def _format_entities(entities: list[W3CEntity]) -> str:
             f"team_contacts={', '.join(entity.team_contacts) or '(unknown)'}",
             f"public_url={entity.public_url or '(none)'}",
             f"api_url={entity.api_url}",
-        ]
+        ])
         if entity.latest_version_url:
             bits.append(f"latest_version_url={entity.latest_version_url}")
         if entity.process_rules_url:

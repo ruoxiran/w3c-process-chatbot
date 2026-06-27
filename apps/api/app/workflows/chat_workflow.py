@@ -37,6 +37,7 @@ from app.services.provider_override import ProviderOverrideError, build_override
 from app.services.query_rewriter import rewrite_query
 from app.services.reranker import rerank_citations
 from app.services.task_planner import build_planned_retrieval_query, plan_task
+from app.services.w3c_terminology import expand_acronyms_for_retrieval
 from app.services.w3c_api import W3CAPIClient
 
 
@@ -697,6 +698,14 @@ class ChatWorkflow:
         planned_query = build_planned_retrieval_query(routed_query, task_plan)
         retrieval_query = build_entity_augmented_query(planned_query, resolved_entities)
         retrieval_query = build_draft_context_augmented_query(retrieval_query, draft_contexts)
+        # Acronym widening: users overwhelmingly write "from CR to REC",
+        # the corpus has both the acronym and the long form, but BM25
+        # scores them as different terms. Silently append the long-form
+        # expansion for any bare acronym so lexical retrieval hits
+        # either form. The original query text is preserved verbatim
+        # so dense + topic-relevance ranking still uses what the user
+        # actually typed.
+        retrieval_query = expand_acronyms_for_retrieval(retrieval_query)
         used_entity_augmented_query = retrieval_query != planned_query
         audit["used_entity_augmented_query"] = used_entity_augmented_query
         if used_entity_augmented_query:
@@ -744,7 +753,10 @@ class ChatWorkflow:
             for variant in rewrite_variants:
                 try:
                     extra_hits.extend(
-                        self.retriever.retrieve(variant, user_message=variant)
+                        self.retriever.retrieve(
+                            expand_acronyms_for_retrieval(variant),
+                            user_message=variant,
+                        )
                     )
                 except Exception as exc:  # pragma: no cover - non-fatal
                     logger.warning("Variant retrieval failed for %r", variant, exc_info=exc)
