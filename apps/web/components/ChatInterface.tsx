@@ -1092,17 +1092,33 @@ function AnswerContent({ text, citations }: { text: string; citations?: Citation
   );
 }
 
+// Markdown links in answer text point at curated action surfaces
+// (issue trackers, mailto:s, forms). Whitelist the URL scheme so a
+// hostile or compromised model can't sneak in javascript: / data:
+// payloads. Anything outside this set renders as the literal text
+// of the markdown link, not as a clickable anchor.
+const SAFE_LINK_SCHEMES = ["https://", "http://", "mailto:"] as const;
+
+export function isSafeActionLink(href: string): boolean {
+  const trimmed = href.trim();
+  return SAFE_LINK_SCHEMES.some((scheme) => trimmed.toLowerCase().startsWith(scheme));
+}
+
 /**
  * Render the limited inline markup we tolerate inside a paragraph or list
- * item: ``**bold**``, ``` `code` ```, and citation labels like ``[S1]`` which
- * resolve to clickable links pointing at the matching citation URL when
- * available. We deliberately do NOT parse general markdown links — citation
- * URLs are the only links we want to surface, and keeping the inline grammar
- * narrow keeps the XSS surface at zero.
+ * item: ``**bold**``, ``` `code` ```, citation labels like ``[S1]`` which
+ * resolve to the matching citation URL, and ``[label](https://…)`` /
+ * ``[label](mailto:…)`` markdown links the model uses for action
+ * surfaces. Other markdown link targets (javascript:, data:, bare
+ * paths) fall through as plain text — the link grammar is narrow on
+ * purpose to keep the XSS surface at zero.
  */
-function renderInline(text: string, citations: Citation[]): ReactNode {
+export function renderInline(text: string, citations: Citation[]): ReactNode {
   const parts: ReactNode[] = [];
-  const pattern = /\*\*(.+?)\*\*|`([^`]+)`|\[S(\d+)\]/g;
+  // Order matters: the link pattern is tried BEFORE the citation
+  // pattern so ``[label](url)`` doesn't get parsed as ``[label]``
+  // followed by ``(url)``.
+  const pattern = /\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)\s]+)\)|\[S(\d+)\]/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let key = 0;
@@ -1114,8 +1130,28 @@ function renderInline(text: string, citations: Citation[]): ReactNode {
       parts.push(<strong key={`b-${key++}`}>{match[1]}</strong>);
     } else if (match[2] !== undefined) {
       parts.push(<code key={`c-${key++}`}>{match[2]}</code>);
-    } else if (match[3] !== undefined) {
-      const index = Number.parseInt(match[3], 10);
+    } else if (match[3] !== undefined && match[4] !== undefined) {
+      const label = match[3];
+      const href = match[4];
+      if (isSafeActionLink(href)) {
+        parts.push(
+          <a
+            className="action-link"
+            key={`l-${key++}`}
+            href={href}
+            target={href.toLowerCase().startsWith("mailto:") ? undefined : "_blank"}
+            rel="noreferrer"
+          >
+            {label}
+          </a>
+        );
+      } else {
+        // Unsafe scheme — render as literal text so the URL is visible
+        // to the user but not clickable.
+        parts.push(`[${label}](${href})`);
+      }
+    } else if (match[5] !== undefined) {
+      const index = Number.parseInt(match[5], 10);
       const citation = citations[index - 1];
       if (citation?.url) {
         parts.push(

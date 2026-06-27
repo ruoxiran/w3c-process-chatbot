@@ -229,24 +229,25 @@ def surfaces_for_intent(intent_type: str | None) -> list[ActionSurface]:
 def format_surfaces_for_prompt(surfaces: list[ActionSurface]) -> str:
     """Render surfaces as a plain bulleted list (no ``[An]`` labels).
 
-    The model should embed the concrete URL / mailto / repo directly into
-    the answer ("file at https://github.com/w3c/i18n-request/issues/new/choose"),
-    not invent a reference tag. Labels like ``[A1]`` would just be echoed
-    back into the answer text and the UI's citation renderer doesn't know
-    how to dereference them.
+    Format is chosen to nudge the model toward markdown-link output —
+    the rendering rule in the system prompt asks for
+    ``[descriptive label](url)`` so the frontend can paint the URL
+    as a clickable inline link instead of ``url=https://...``
+    surfacing as literal text.
+
+    No ``[An]`` reference tags: those would just be echoed back into
+    the answer and the UI's citation renderer doesn't know how to
+    dereference them.
     """
     if not surfaces:
         return ""
     lines = []
     for surface in surfaces:
-        bits: list[str] = [f"- {surface.label}"]
-        if surface.url:
-            bits.append(f"url={surface.url}")
-        if surface.email:
-            bits.append(f"mailto={surface.email}")
-        if surface.repo:
-            bits.append(f"repo={surface.repo}")
-        line = "; ".join(bits)
+        target = surface.url or (f"mailto:{surface.email}" if surface.email else None) or surface.repo
+        if target:
+            line = f"- {surface.label} — {target}"
+        else:
+            line = f"- {surface.label}"
         if surface.notes:
             line = f"{line}\n    note: {surface.notes}"
         lines.append(line)

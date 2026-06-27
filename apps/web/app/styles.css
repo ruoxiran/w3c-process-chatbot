@@ -1398,6 +1398,26 @@ button:disabled {
   color: var(--w3c-blue-dark);
 }
 
+/* Inline action-surface links inside the answer body — markdown
+   ``[label](url)`` syntax rendered as a clickable underlined link.
+   Visually distinct from citation refs (which are pill-shaped tags). */
+.action-link {
+  color: var(--w3c-link);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.action-link:hover,
+.action-link:focus-visible {
+  color: var(--w3c-blue-dark);
+  text-decoration-thickness: 2px;
+}
+
+.message-user .action-link {
+  color: #fff;
+}
+
 .citation-ref-missing {
   color: var(--w3c-muted);
   font-size: 0.78em;
