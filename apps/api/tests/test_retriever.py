@@ -70,6 +70,36 @@ def test_retriever_finds_specific_horizontal_review_request_guidance() -> None:
     assert "i18n-request" in combined or "privacy-request" in combined
 
 
+def test_retriever_prioritises_meeting_tooling_entry_points_for_scribe_question() -> None:
+    """A "how to scribe?" answer used to lead with the ``#pickvictim``
+    Zakim feature (random scribe selection) instead of the IRC /
+    invite-Zakim / RRSAgent entry points. Boost rules in
+    guide_topics.RELEVANCE_RULES counterweight the lexical pull of
+    the niche feature chunk; pin the resulting ordering here."""
+    citations = Retriever().retrieve("how to scribe a meeting?")
+    urls = [str(c.url).lower() for c in citations]
+    combined = " ".join(urls)
+
+    # The entry-point chapters must surface in the top retrieval pool.
+    assert any("/guide/meetings/irc.html" in url for url in urls), (
+        "IRC chapter missing from top results: " + combined
+    )
+    assert any("/guide/meetings/zakim.html" in url for url in urls), (
+        "Zakim chapter missing from top results: " + combined
+    )
+    assert any("/guide/meetings/rrsagent.html" in url for url in urls), (
+        "RRSAgent chapter missing from top results: " + combined
+    )
+    # The niche ``#pickvictim`` chunk should not lead the results for
+    # a general "how to scribe" query — at best mid-pack.
+    pickvictim_indices = [i for i, u in enumerate(urls) if "#pickvictim" in u]
+    if pickvictim_indices:
+        assert min(pickvictim_indices) >= 3, (
+            f"#pickvictim should not lead general scribe results; "
+            f"appeared at index {min(pickvictim_indices)}"
+        )
+
+
 def test_retriever_keeps_transition_guidebook_topic_pages() -> None:
     citations = Retriever().retrieve("How should a specification prepare a CR to REC transition request and milestones?")
     combined = " ".join(str(citation.url) for citation in citations).lower()

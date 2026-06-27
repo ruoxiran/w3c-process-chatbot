@@ -38,9 +38,22 @@ describe("isSafeActionLink", () => {
 
 // ---------- renderInline grammar -------------------------------------------
 
-function elementsOfType(nodes: ReactNode[], tag: string): ReactElement[] {
+// React's typed ``props`` is ``unknown`` on the generic ReactElement;
+// every assertion below needs to look up specific props (href, className,
+// children, target). Narrow once here so the test bodies can use a
+// plain anchor-prop shape.
+type AnchorElement = ReactElement<{
+  href?: string;
+  className?: string;
+  children?: ReactNode;
+  target?: string;
+  rel?: string;
+  title?: string;
+}>;
+
+function elementsOfType(nodes: ReactNode[], tag: string): AnchorElement[] {
   return nodes.filter(
-    (node): node is ReactElement =>
+    (node): node is AnchorElement =>
       isValidElement(node) && (node.type as unknown) === tag
   );
 }

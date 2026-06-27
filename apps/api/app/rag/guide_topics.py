@@ -422,4 +422,42 @@ RELEVANCE_RULES: tuple[ScoringRule, ...] = (
         query_topic_id="horizontal_review",
         url_any=("github.com/w3c/guide",),
         url_none=("documentreview", "horizontal-groups")),
+    # ---- meeting-tooling / scribing cluster -------------------------------
+    # "how to scribe" questions need to land on the workflow entry
+    # points (join IRC → invite bots → scribe.perl conventions) not
+    # on niche bot features. The lexical "scribe" frequency naturally
+    # pulls the ``#pickvictim`` chunk to the top because that section
+    # repeats the word — these rules counterweight that.
+    ScoringRule(id="scribe_irc_chapter", score=32,
+        query_any=("scribe", "scribing", "zakim", "rrsagent", "irc"),
+        url_any=("/guide/meetings/irc.html",)),
+    ScoringRule(id="scribe_zakim_entry_sections", score=28,
+        query_any=("scribe", "scribing", "zakim"),
+        url_any=(
+            "/guide/meetings/zakim.html#invite",
+            "/guide/meetings/zakim.html#startmeeting",
+            "/guide/meetings/zakim.html#general",
+            "/guide/meetings/zakim.html#addressing",
+        )),
+    ScoringRule(id="scribe_rrsagent_chapter", score=26,
+        query_any=("scribe", "scribing", "rrsagent", "minutes log"),
+        url_any=("/guide/meetings/rrsagent.html",)),
+    # The Zakim "pick a scribe" feature is technically a scribing
+    # topic but it's an ADVANCED helper, not where a new scribe
+    # should start. Demote it strongly for general "how to scribe"
+    # queries so the entry-point chunks above out-rank it.
+    ScoringRule(id="scribe_pickvictim_penalty", score=-30,
+        query_any=("how to scribe", "how do i scribe", "how to take minutes",
+                   "how do i take minutes", "how to do scribe"),
+        url_any=("#pickvictim",)),
+    # Prefer the published w3.org HTML chapter over its github.com
+    # markdown twin — citations should send the user to the rendered
+    # page with the section anchor, not the raw .md file.
+    ScoringRule(id="meetings_guide_html_preferred", score=10,
+        query_any=("scribe", "scribing", "zakim", "rrsagent", "irc", "minutes log"),
+        url_any=("www.w3.org/guide/meetings/",)),
+    ScoringRule(id="meetings_guide_md_penalty", score=-10,
+        query_any=("scribe", "scribing", "zakim", "rrsagent", "irc", "minutes log"),
+        url_any=("github.com/w3c/guide/blob/", "meetings/zakim.md",
+                 "meetings/rrsagent.md", "meetings/irc.md")),
 )

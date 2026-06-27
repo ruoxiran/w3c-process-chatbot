@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import { FormEvent, KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { CitationPanel } from "@/components/CitationPanel";
 import {
   ModelSettings,
@@ -67,6 +67,28 @@ export function ChatInterface() {
   useEffect(() => {
     setProviderConfig(loadSavedConfig());
   }, []);
+
+  // Auto-scroll the conversation pane to the bottom whenever a new
+  // message lands (user question, pending placeholder, or streamed
+  // assistant content). Without this the user has to manually scroll
+  // to see their just-asked question on long sessions.
+  //
+  // Both message COUNT and the latest message's content drive the
+  // scroll: content changes when streaming deltas append to the
+  // pending assistant bubble, so a single-question turn still
+  // produces multiple updates.
+  const conversationRef = useRef<HTMLDivElement>(null);
+  const lastMessageId = messages[messages.length - 1]?.id ?? "";
+  const lastMessageContent = messages[messages.length - 1]?.content ?? "";
+  useEffect(() => {
+    const node = conversationRef.current;
+    if (!node) return;
+    // ``scrollTop = scrollHeight`` is more reliable than
+    // ``scrollIntoView`` here — the container is the scrollable
+    // viewport (not the page), and scrollIntoView would scroll the
+    // outer page too if the container itself isn't fully visible.
+    node.scrollTop = node.scrollHeight;
+  }, [lastMessageId, lastMessageContent, messages.length]);
 
   const latestResponse = useMemo(
     () => [...messages].reverse().find((item) => item.response)?.response ?? null,
@@ -313,6 +335,7 @@ export function ChatInterface() {
         />
 
         <div
+          ref={conversationRef}
           className="conversation"
           role="log"
           aria-live="polite"
