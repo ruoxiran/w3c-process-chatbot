@@ -161,6 +161,15 @@ def _intent_type(text: str) -> str:
         # scribe.html guide pages.
         "scribe", "scribing", "zakim", "rrsagent", "irc", "irc bot",
         "scribe.perl", "记录员", "会议记录",
+        # Group governance / behavior — Code of Conduct + Antitrust
+        # Policy live as action surfaces under this intent (round 24).
+        # Without these keywords "what does the W3C Code of Conduct
+        # say" / "antitrust rules for cross-company participation"
+        # fell through to advance_specification and missed the
+        # policy chunks entirely.
+        "code of conduct", "coc ", "positive work environment",
+        "antitrust", "competition policy", "cross-company",
+        "行为准则", "反垄断",
     ]):
         return "run_group_process"
     if _has(text, ["community group", "incubation", "cg ", "转入 working group"]):
@@ -282,19 +291,35 @@ def _search_queries(
     elif intent_type == "coordinate_with_staff_contact":
         seed.extend(["Staff Contact Team Contact responsibilities", "Guidebook Staff Contact role"])
     elif intent_type == "run_group_process":
-        seed.extend([
-            "W3C group meeting process chair minutes decision",
-            "Guidebook chair meetings agenda minutes",
-            # Tool-specific seeds so retrieval lands on the dedicated
-            # zakim.html / rrsagent.html / scribe.html guide pages
-            # when the user asks "how to scribe?", "what is Zakim?",
-            # "how do I queue with rrsagent?". Without these the
-            # generic meeting/minutes seeds drift to chapters that
-            # only mention scribing tangentially.
-            "Zakim IRC bot agenda queue start meeting take up",
-            "RRSAgent IRC bot record minutes log scribe.perl",
-            "scribe IRC bot scribe.perl meeting minutes record",
-        ])
+        # Branch by sub-topic — run_group_process covers three quite
+        # different sub-domains: meetings/scribing, group governance
+        # (Code of Conduct), and cross-company antitrust. Meeting
+        # seeds bias retrieval toward meeting pages, which is wrong
+        # when the user asks about antitrust or CoC. Emit only the
+        # seeds that match the question's actual sub-topic.
+        lower_msg = message.lower()
+        if "antitrust" in lower_msg or "competition policy" in lower_msg or "反垄断" in lower_msg:
+            seed.extend([
+                "W3C antitrust policy participants cross-company",
+                "antitrust competition rules group participation",
+            ])
+        elif "code of conduct" in lower_msg or "positive work environment" in lower_msg or "行为准则" in lower_msg:
+            seed.extend([
+                "W3C Code of Conduct positive work environment unacceptable behavior",
+                "Code of Conduct reporting harassment ethical guidelines",
+            ])
+        else:
+            seed.extend([
+                "W3C group meeting process chair minutes decision",
+                "Guidebook chair meetings agenda minutes",
+                # Tool-specific seeds so retrieval lands on the
+                # dedicated zakim.html / rrsagent.html / scribe.html
+                # guide pages when the user asks "how to scribe?",
+                # "what is Zakim?", "how do I queue with rrsagent?".
+                "Zakim IRC bot agenda queue start meeting take up",
+                "RRSAgent IRC bot record minutes log scribe.perl",
+                "scribe IRC bot scribe.perl meeting minutes record",
+            ])
     elif intent_type == "transfer_incubation_to_wg":
         seed.extend(["Community Group specification transfer Working Group incubation", "Guidebook CG transition Working Group"])
     elif intent_type == "author_spec":
@@ -423,6 +448,14 @@ def _horizontal_review_needles() -> list[str]:
         "*-needs-resolution",
         "needs-resolution",
         "horizontal issue tracker",
+        # Security/Privacy Questionnaire — the concrete checklist
+        # spec authors fill in for privacy/security review. Indexed
+        # in round 27. Routes through horizontal_review because the
+        # questionnaire IS a horizontal-review artifact.
+        "security and privacy questionnaire",
+        "security/privacy questionnaire",
+        "privacy questionnaire",
+        "self-review questionnaire",
     ]
 
 

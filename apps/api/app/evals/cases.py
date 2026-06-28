@@ -573,4 +573,93 @@ EVAL_CASES = [
         min_confidence=0.55,
         tags=("safety", "source-authority"),
     ),
+
+    # ------------------------------------------------------------------
+    # Tier-1 + Tier-2 corpus coverage — added in rounds 24 + 27.
+    # Each case asserts the new content actually surfaces as a
+    # citation, not just lives in the corpus unused.
+    # ------------------------------------------------------------------
+
+    EvalCase(
+        name="patent-policy-exclusion",
+        message="How does the W3C Patent Policy handle exclusion notices?",
+        expected_in_scope=True,
+        expected_intent="check_patent_policy",
+        expected_source_types=("process",),
+        expected_url_substrings=("w3.org/policies/patent-policy",),
+        expected_answer_terms=("Patent Policy",),
+        min_confidence=0.55,
+        tags=("policy", "patent-policy", "corpus-tier1"),
+    ),
+    EvalCase(
+        name="code-of-conduct-positive-environment",
+        message="What does the W3C Code of Conduct say about positive work environment?",
+        expected_in_scope=True,
+        expected_intent="run_group_process",
+        expected_source_types=("process",),
+        expected_url_substrings=("w3.org/policies/code-of-conduct",),
+        min_confidence=0.55,
+        tags=("policy", "code-of-conduct", "corpus-tier1"),
+    ),
+    EvalCase(
+        name="antitrust-cross-company",
+        message="What are the W3C antitrust rules for cross-company group participation?",
+        expected_in_scope=True,
+        expected_intent="run_group_process",
+        expected_source_types=("process",),
+        expected_url_substrings=("w3.org/policies/antitrust",),
+        min_confidence=0.55,
+        tags=("policy", "antitrust", "corpus-tier1"),
+    ),
+    EvalCase(
+        name="security-privacy-questionnaire-content",
+        message="What questions should I answer in the W3C Security and Privacy Questionnaire?",
+        expected_in_scope=True,
+        expected_intent="horizontal_review",
+        expected_source_types=("guide",),
+        expected_url_substrings=("w3.org/TR/security-privacy-questionnaire",),
+        min_confidence=0.55,
+        tags=("horizontal-review", "spq", "corpus-tier2"),
+    ),
+    EvalCase(
+        name="author-spec-respec-or-bikeshed",
+        message="Should I use ReSpec or Bikeshed to author my new W3C spec?",
+        expected_in_scope=True,
+        expected_intent="author_spec",
+        expected_source_types=("guide",),
+        # Editor / repo-management chapters are what the corpus has;
+        # ReSpec / Bikeshed sites are action surfaces, not citations.
+        expected_url_substrings=("w3.org/guide/editor",),
+        min_confidence=0.55,
+        tags=("tooling", "author-spec", "intent-routing"),
+    ),
+    EvalCase(
+        name="author-spec-echidna-publication",
+        message="How do I configure Echidna for automated publication of my spec?",
+        expected_in_scope=True,
+        expected_intent="author_spec",
+        expected_source_types=("guide",),
+        min_confidence=0.55,
+        tags=("tooling", "author-spec", "echidna", "intent-routing"),
+    ),
+    EvalCase(
+        name="process-guide-pair-wide-review",
+        message="What does wide review require and how do I run one?",
+        expected_in_scope=True,
+        # Pin the Process↔Guide pairing: a wide-review question MUST
+        # surface BOTH the Process rule section AND the Guidebook
+        # documentreview chapter together. Round 25 wired this; this
+        # case prevents regression. Term check intentionally omitted
+        # — template-mode answers paraphrase ("horizontal review",
+        # "review responsibilities") rather than echo the query
+        # phrase literally; the URL-pair assertion is what enforces
+        # the pairing invariant.
+        expected_source_types=("process", "guide"),
+        expected_url_substrings=(
+            "w3.org/policies/process",  # the rule
+            "w3.org/guide/documentreview",  # the operation
+        ),
+        min_confidence=0.55,
+        tags=("pairing", "process-guide", "wide-review"),
+    ),
 ]
