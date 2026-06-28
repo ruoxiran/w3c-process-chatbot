@@ -57,6 +57,29 @@ WEB_SOURCES = [
         "source_type": "process",
         "repo_name": "antitrust",
     },
+    # Tier-2 horizontal-review reference doc the Guidebook
+    # documentreview chapter links to but never inlines. Single-page
+    # TR with ~50 sections; gives the model concrete questionnaire
+    # content to cite alongside the "file a privacy/security review
+    # request" step instead of only naming the tracker URL.
+    #
+    # Source type is ``guide`` so internal-section anchors get
+    # followed (depth=4 by default), but ``is_crawlable_internal_url``
+    # keeps the crawl scoped to ``/TR/security-privacy-questionnaire/``
+    # — no fan-out into the broader ``/TR/`` tree.
+    {
+        "name": "W3C Security and Privacy Questionnaire",
+        "url": "https://www.w3.org/TR/security-privacy-questionnaire/",
+        "source_type": "guide",
+        "repo_name": "security-privacy-questionnaire",
+    },
+    # WAI standards landing was tried and reverted in round 27:
+    # ``/WAI/standards-guidelines/`` fans out into ACT (~14k chunks),
+    # WCAG (~1k), and 10+ language translations — would dominate the
+    # corpus and bias retrieval toward a11y-only content. The TAG
+    # design-reviews + i18n-request action surfaces already cover the
+    # operational entry points; the per-axis review specifics belong
+    # on the external sites, not in this corpus.
 ]
 
 REPOS = [

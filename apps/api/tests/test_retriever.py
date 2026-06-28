@@ -139,6 +139,23 @@ def test_retriever_surfaces_code_of_conduct_for_behavior_questions() -> None:
     )
 
 
+def test_retriever_surfaces_security_privacy_questionnaire() -> None:
+    """The S/P Questionnaire is the concrete checklist PING + SecIG
+    expect spec authors to work through before requesting privacy /
+    security review. Before round 27 it was an external action-
+    surface link only; now it's indexed in the corpus so the model
+    can cite specific questions from it alongside the "file a review"
+    step. Pin that questions about the questionnaire's content
+    surface chunks from the TR itself."""
+    citations = Retriever().retrieve(
+        "what questions should I answer in the security and privacy questionnaire"
+    )
+    urls = [str(c.url).lower() for c in citations[:6]]
+    assert any("security-privacy-questionnaire" in u for u in urls), (
+        "S/P Questionnaire missing from top results: " + " | ".join(urls)
+    )
+
+
 def test_retriever_surfaces_antitrust_policy_for_competition_questions() -> None:
     """Antitrust policy is short but operationally critical (member
     behavior in cross-company groups)."""

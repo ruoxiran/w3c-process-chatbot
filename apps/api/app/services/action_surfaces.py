@@ -114,6 +114,11 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
             label="Guidebook — how to get horizontal review",
             url="https://www.w3.org/guide/documentreview/",
         ),
+        ActionSurface(
+            label="W3C Security and Privacy Questionnaire (TR)",
+            url="https://www.w3.org/TR/security-privacy-questionnaire/",
+            notes="The concrete checklist the PING and security IGs expect spec authors to work through before requesting privacy/security review. Now indexed in the corpus too.",
+        ),
     ],
     "charter_or_recharter": [
         ActionSurface(
