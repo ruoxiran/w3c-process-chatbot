@@ -44,6 +44,15 @@ jobs:
         working-directory: apps/api
         run: pytest -q
 
+      - name: Eval (deterministic, template mode)
+        # Runs the structural eval against the deterministic
+        # (template-provider) workflow. No LLM call, no API key, no
+        # network — score depends ONLY on retrieval / planning /
+        # ranking code, which makes it a fast, free, reproducible
+        # regression check on every PR. Core must be 100%;
+        # adversarial must clear the 66% (20/30) floor.
+        run: python scripts/run_deterministic_eval.py --include-adversarial
+
   web:
     name: Web (tsc + lint)
     runs-on: ubuntu-latest

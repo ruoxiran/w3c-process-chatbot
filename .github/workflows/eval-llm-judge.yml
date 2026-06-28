@@ -1,0 +1,170 @@
+name: LLM Judge Eval
+
+# On-demand quality gate using a real LLM both as the workflow's
+# generator AND as the rubric judge. Costs $0.10–$2 per run depending
+# on model + case count, so it is NOT wired into the per-PR CI loop.
+# Trigger paths:
+#   1. ``workflow_dispatch`` — anyone can fire it from the Actions tab
+#      with optional model + case-set overrides.
+#   2. A PR labelled ``run-llm-judge`` — contributors opt in per PR.
+#   3. Weekly cron against ``main`` so a baseline trendline exists.
+#
+# Requires repo secrets:
+#   OPENAI_COMPATIBLE_API_KEY        — token for the upstream provider
+# Optionally:
+#   OPENAI_COMPATIBLE_BASE_URL       — overrides the default (api.openai.com/v1)
+#   OPENAI_COMPATIBLE_MODEL          — overrides the default model id
+#
+# If the secret is unset the workflow skips with a friendly message —
+# never silently runs against an unconfigured provider.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Override the chat + judge model id (e.g. moonshot-v1-32k, gpt-4o-mini)"
+        required: false
+        default: ""
+      include_adversarial:
+        description: "Include the adversarial / compound case set"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+  pull_request:
+    types: [labeled, synchronize]
+  schedule:
+    # Mondays 02:00 UTC — once-a-week trendline against main.
+    - cron: "0 2 * * 1"
+
+concurrency:
+  group: eval-judge-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  judge:
+    # PR path runs only when the ``run-llm-judge`` label is present.
+    # Manual + scheduled paths always run.
+    if: |
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'run-llm-judge')
+    name: LLM judge
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LLM_PROVIDER: openai-compatible
+      OPENAI_COMPATIBLE_API_KEY: ${{ secrets.OPENAI_COMPATIBLE_API_KEY }}
+      OPENAI_COMPATIBLE_BASE_URL: ${{ secrets.OPENAI_COMPATIBLE_BASE_URL }}
+      OPENAI_COMPATIBLE_MODEL: ${{ inputs.model || secrets.OPENAI_COMPATIBLE_MODEL || 'gpt-4o-mini' }}
+      # Keep retrieval deterministic — no need for dense embeddings on
+      # the CI runner (and Ollama isn't available there anyway).
+      RETRIEVAL_DENSE_ENABLED: "false"
+      W3C_API_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+
+      - name: Verify API key is configured
+        run: |
+          if [ -z "$OPENAI_COMPATIBLE_API_KEY" ]; then
+            echo "::warning::OPENAI_COMPATIBLE_API_KEY is not set; skipping LLM judge."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+        id: gate
+
+      - name: Install API dependencies (without torch/sentence-transformers)
+        if: steps.gate.outputs.skip != 'true'
+        # CI doesn't need the reranker; the workflow gracefully
+        # degrades to LLM-as-reranker when sentence-transformers
+        # is missing. Skipping torch saves ~3 GB + several minutes.
+        run: |
+          grep -v -E "^(sentence-transformers|torch)" apps/api/requirements.txt > /tmp/req-ci.txt
+          pip install -r /tmp/req-ci.txt
+
+      - name: Fetch a tiny demo corpus for retrieval
+        if: steps.gate.outputs.skip != 'true'
+        # The real corpus is gitignored (130MB). For CI we fetch the
+        # current Process Document + Guide root pages just to give
+        # retrieval SOMETHING to work with. The LLM judge is
+        # measuring the WORKFLOW's generation quality, not corpus
+        # depth, so a thin corpus is fine for the rubric scores.
+        run: |
+          mkdir -p data/corpus
+          python -m pip install httpx beautifulsoup4 >/dev/null
+          python scripts/import_w3c_sources.py \
+            --sources-dir data/sources \
+            --corpus-dir data/corpus \
+            --skip-repos 2>&1 | tail -5 || \
+            echo "::warning::corpus import failed; eval may underperform"
+
+      - name: Run LLM judge
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          mkdir -p reports
+          ADVERSARIAL_FLAG=""
+          if [ "${{ inputs.include_adversarial || 'true' }}" = "false" ]; then
+            ADVERSARIAL_FLAG="--no-adversarial"
+          fi
+          python scripts/run_llm_judge.py \
+            $ADVERSARIAL_FLAG \
+            --output reports/judge.json \
+            --print-failures \
+            | tee reports/judge.log
+        continue-on-error: true  # Report-only; never fails the PR.
+
+      - name: Summarise score
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          if [ ! -f reports/judge.json ]; then
+            echo "::error::No judge report produced"
+            exit 1
+          fi
+          python - <<'PY'
+          import json, os, pathlib
+          report = json.loads(pathlib.Path("reports/judge.json").read_text())
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          lines = [
+              "## LLM Judge",
+              "",
+              f"**Pass rate: {report['pass_rate'] * 100:.1f}% ({report['passed']}/{report['total']})**",
+              "",
+              f"- Accuracy:        {report['average_accuracy']} / 5",
+              f"- Groundedness:    {report['average_groundedness']} / 5",
+              f"- Relevance:       {report['average_relevance']} / 5",
+              f"- Harm avoidance:  {report['average_harm_avoidance']} / 5",
+          ]
+          fails = [s for s in report["scores"] if not s["passed"]]
+          if fails:
+              lines.append("")
+              lines.append(f"<details><summary>{len(fails)} failing cases (avg below threshold)</summary>")
+              lines.append("")
+              for s in fails:
+                  tags = ",".join(s.get("tags", [])) or "(no tags)"
+                  lines.append(
+                      f"- [{tags}] **{s['case_name']}** "
+                      f"avg={s['average']} acc={s['accuracy']} "
+                      f"ground={s['groundedness']} rel={s['relevance']} "
+                      f"harm={s['harm_avoidance']}"
+                  )
+              lines.append("</details>")
+          text = "\n".join(lines) + "\n"
+          print(text)
+          if summary_path:
+              with open(summary_path, "a") as fh:
+                  fh.write(text)
+          PY
+
+      - name: Upload report artifact
+        if: steps.gate.outputs.skip != 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-judge-report
+          path: reports/judge.json
+          if-no-files-found: warn
