@@ -28,6 +28,7 @@ from app.services.action_surfaces import (
     surfaces_for_intent,
 )
 from app.services.citation_verifier import verify_citations
+from app.services.claim_verifier import verify_claims
 from app.services.cross_encoder_reranker import (
     CrossEncoderRerankResult,
     MissingDependencyError as _CrossEncoderMissing,
@@ -1308,6 +1309,43 @@ class ChatWorkflow:
                 )
             elif verification.skipped_reason:
                 ctx.audit["citation_verifier_skipped"] = verification.skipped_reason
+
+            # Chain-of-verification — second pass, opposite direction.
+            # citation_verifier above strips ``[Sn]`` tags whose
+            # claims don't survive scrutiny. claim_verifier finds
+            # CLAIM-SENTENCES that have no [Sn] tag at all and
+            # appends an inline ``[unverified]`` marker so users
+            # see which assertions lack source grounding. Off by
+            # default; flip ``claim_verification_enabled`` to turn on.
+            if self.settings.claim_verification_enabled:
+                claim_result = verify_claims(
+                    answer,
+                    citations,
+                    settings=self.settings,
+                    client=self._resolve_llm_client(),
+                    model=router_model,
+                )
+                if claim_result.unsupported_claims:
+                    answer = claim_result.annotated_answer
+                    ctx.audit["claim_verifier"] = {
+                        "model": claim_result.model,
+                        "annotated_count": len(claim_result.unsupported_claims),
+                    }
+                    ctx.record(
+                        WorkflowStep(
+                            id="claim_verifier",
+                            label="Unsourced-claim auditor",
+                            status="completed",
+                            detail=(
+                                f"Found {len(claim_result.unsupported_claims)} factual claim(s) "
+                                "without a citation tag that the cited excerpts don't support. "
+                                "Each is marked inline as ``[unverified]`` so the user can see "
+                                "which assertions aren't grounded."
+                            ),
+                        )
+                    )
+                elif claim_result.skipped_reason:
+                    ctx.audit["claim_verifier_skipped"] = claim_result.skipped_reason
 
         if classification.injection_risk:
             ctx.audit["safety_note"] = "Potential prompt injection detected; answer constrained to trusted sources."

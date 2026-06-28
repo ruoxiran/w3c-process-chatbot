@@ -72,6 +72,14 @@ class Settings(BaseSettings):
     # rewriter so wall-clock overhead is bounded by the slower of
     # the two.
     hyde_enabled: bool = True
+    # Chain-of-verification — after generation, scan the answer for
+    # factual claims that lack a ``[Sn]`` citation tag and ask the
+    # LLM whether any cited excerpt nonetheless supports them.
+    # Flagged claims get an inline ``[unverified]`` marker so users
+    # see which assertions aren't grounded. One extra LLM call per
+    # request; off by default until production data confirms it
+    # reduces hallucinations without false positives.
+    claim_verification_enabled: bool = False
     # Cross-encoder reranker takes priority over the LLM-as-reranker when
     # enabled. The dependency (sentence-transformers + torch + ~600MB model
     # download on first use) is optional; if loading fails the workflow
