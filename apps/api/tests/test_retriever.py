@@ -70,6 +70,40 @@ def test_retriever_finds_specific_horizontal_review_request_guidance() -> None:
     assert "i18n-request" in combined or "privacy-request" in combined
 
 
+def test_retriever_surfaces_patent_policy_for_ipr_questions() -> None:
+    """The Patent Policy is a separate normative document; before
+    round 24 it wasn't in the corpus at all, so IPR / exclusion /
+    royalty-free questions could only land on Process Document
+    cross-references. Pin that it now leads the results."""
+    citations = Retriever().retrieve(
+        "what does the W3C Patent Policy say about exclusion"
+    )
+    urls = [str(c.url).lower() for c in citations[:5]]
+    assert any("policies/patent-policy" in u for u in urls), (
+        "Patent Policy missing from top results: " + " | ".join(urls)
+    )
+
+
+def test_retriever_surfaces_code_of_conduct_for_behavior_questions() -> None:
+    """Code of Conduct was referenced 20 times across the corpus but
+    never indexed before round 24."""
+    citations = Retriever().retrieve("what is the W3C Code of Conduct")
+    urls = [str(c.url).lower() for c in citations[:5]]
+    assert any("policies/code-of-conduct" in u for u in urls), (
+        "Code of Conduct missing from top results: " + " | ".join(urls)
+    )
+
+
+def test_retriever_surfaces_antitrust_policy_for_competition_questions() -> None:
+    """Antitrust policy is short but operationally critical (member
+    behavior in cross-company groups)."""
+    citations = Retriever().retrieve("antitrust rules for W3C participants")
+    urls = [str(c.url).lower() for c in citations[:5]]
+    assert any("policies/antitrust" in u for u in urls), (
+        "Antitrust policy missing from top results: " + " | ".join(urls)
+    )
+
+
 def test_retriever_prioritises_meeting_tooling_entry_points_for_scribe_question() -> None:
     """A "how to scribe?" answer used to lead with the ``#pickvictim``
     Zakim feature (random scribe selection) instead of the IRC /

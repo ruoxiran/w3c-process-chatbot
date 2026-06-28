@@ -130,13 +130,18 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
         ),
     ],
     "check_patent_policy": [
+        # Use the canonical /policies/patent-policy/ URL — same path
+        # that's now in the corpus after round 24. The legacy
+        # /Consortium/Patent-Policy/ URL redirects but breaks the
+        # ``link === citation excerpt URL`` invariant the renderer
+        # uses for the source pill.
         ActionSurface(
             label="W3C Patent Policy",
-            url="https://www.w3.org/Consortium/Patent-Policy/",
+            url="https://www.w3.org/policies/patent-policy/",
         ),
         ActionSurface(
-            label="File an Exclusion via the Patent Policy form",
-            url="https://www.w3.org/Consortium/Patent-Policy/#sec-Exclusion",
+            label="Exclusion mechanism (Patent Policy §4)",
+            url="https://www.w3.org/policies/patent-policy/#sec-exclude-mech",
             notes="Exclusion notices follow strict timing tied to CR Snapshot publication.",
         ),
     ],
@@ -185,6 +190,17 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
         ActionSurface(
             label="Open an operational issue for your group",
             notes="Use your group's own GitHub repository's issue tracker for spec-level discussion; the W3C Team for process questions.",
+        ),
+        # Behavior + cross-company conduct: separate normative docs
+        # the Process + Guidebook reference. Surface them so the
+        # model can deep-link to the actual rule the user needs.
+        ActionSurface(
+            label="W3C Code of Conduct (positive work environment + reporting)",
+            url="https://www.w3.org/policies/code-of-conduct/",
+        ),
+        ActionSurface(
+            label="W3C Antitrust and competition policy",
+            url="https://www.w3.org/policies/antitrust/",
         ),
     ],
     "transfer_incubation_to_wg": [

@@ -33,6 +33,30 @@ WEB_SOURCES = [
         "source_type": "guide",
         "repo_name": "guide",
     },
+    # Tier-1 policy documents the Process + Guidebook reference but
+    # never define in full. Each is a single HTML page (same shape as
+    # the Process Document) so depth=0 / max_pages=1 — the default for
+    # non-guide sources — is correct. Tagged ``process`` so the prompt
+    # treats them as normative authority alongside the main Process
+    # Document, not as practice guidance.
+    {
+        "name": "W3C Patent Policy",
+        "url": "https://www.w3.org/policies/patent-policy/",
+        "source_type": "process",
+        "repo_name": "patent-policy",
+    },
+    {
+        "name": "W3C Code of Conduct",
+        "url": "https://www.w3.org/policies/code-of-conduct/",
+        "source_type": "process",
+        "repo_name": "code-of-conduct",
+    },
+    {
+        "name": "W3C Antitrust Policy",
+        "url": "https://www.w3.org/policies/antitrust/",
+        "source_type": "process",
+        "repo_name": "antitrust",
+    },
 ]
 
 REPOS = [
