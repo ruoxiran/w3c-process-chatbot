@@ -14,11 +14,13 @@ from app.core.config import Settings, get_settings
 from app.core.paths import resolve_data_path
 from app.models.schemas import Citation, SourceType
 from app.rag.guide_topics import (
+    PROCESS_GUIDE_PAIRS,
     RELEVANCE_RULES,
     TOPIC_BONUS_RULES,
     apply_scoring_rules,
     is_topic_match,
     matching_guide_topics,
+    paired_guide_topics,
 )
 from app.services.embeddings import OllamaEmbeddingClient
 
@@ -198,6 +200,12 @@ class Retriever:
         candidates = _drop_redundant_snapshots(candidates)
         selected = _balanced_hits(candidates, limit)
         selected = _ensure_topic_coverage(user_message, selected, candidates, limit)
+        # Process rule ↔ Guidebook operation pairing. Process tells
+        # the rule; Guidebook tells how to operationalise it. The
+        # answer is best when both sides are cited together — this
+        # pass guarantees both make it into the top-K when the
+        # current Process chunks have known Guidebook counterparts.
+        selected = _ensure_process_guide_pairing(selected, candidates, limit)
         citations: list[Citation] = []
         seen: set[str] = set()
         for _, record, _scores in selected:
@@ -750,6 +758,110 @@ def _ensure_topic_coverage(
             enriched[victim_index] = replacement
         enriched.sort(key=lambda item: item[0], reverse=True)
 
+    return enriched[:limit]
+
+
+def _ensure_process_guide_pairing(
+    selected: list[tuple[float, CorpusRecord, dict[str, float]]],
+    candidates: list[tuple[float, CorpusRecord, dict[str, float]]],
+    limit: int,
+) -> list[tuple[float, CorpusRecord, dict[str, float]]]:
+    """Pair a Process rule chunk with its Guidebook operations chapter.
+
+    The Process Document gives the normative rule ("WGs must do
+    horizontal review before CR"); the Guidebook gives the operational
+    chapter ("to do horizontal review, file at
+    github.com/w3c/i18n-request/..."). The user almost always wants
+    BOTH in the answer. ``guide_topics.PROCESS_GUIDE_PAIRS`` encodes
+    which Process section maps to which Guidebook chapter(s); this
+    pass enforces that pairing in the retrieval result set.
+
+    Algorithm:
+      1. For each Process chunk in ``selected``, look up its
+         section_id's paired Guidebook topics.
+      2. Check whether ANY current Guidebook chunk in ``selected``
+         is from one of those topics.
+      3. If not — find one in ``candidates`` and inject it,
+         displacing the lowest-ranked currently-selected chunk that
+         isn't itself a pairing target.
+
+    No-op when nothing in the result set has a recognised pairing —
+    the table is conservative (only sections with corpus-confirmed
+    cross-references), so most queries naturally pass through.
+    """
+    needed_topics: set[str] = set()
+    for hit in selected:
+        record = hit[1]
+        if record.source_type != "process":
+            continue
+        section_id = str(record.chunk.get("section_id") or "")
+        for topic_key in paired_guide_topics(section_id):
+            needed_topics.add(topic_key)
+    if not needed_topics:
+        return selected
+
+    seen_urls = {str(hit[1].chunk.get("source_url") or "").lower() for hit in selected}
+    seen_ids = {_hit_id(hit[1].chunk) for hit in selected}
+
+    def url_covers_topic(url_lower: str, topic_key: str) -> bool:
+        # Match either ``/guide/<topic>`` (rendered HTML) or
+        # ``/blob/<sha>/<topic>.md`` (github markdown source). The
+        # topic key is path-shaped (e.g. ``documentreview/index``),
+        # so plain substring matching works for both forms.
+        if f"/guide/{topic_key}" in url_lower:
+            return True
+        if f"/{topic_key}.md" in url_lower:
+            return True
+        return False
+
+    covered: set[str] = set()
+    for topic_key in needed_topics:
+        if any(url_covers_topic(url, topic_key) for url in seen_urls):
+            covered.add(topic_key)
+    missing = needed_topics - covered
+    if not missing:
+        return selected
+
+    # Conservative pairing rule:
+    #   1. Append only — never evict an existing chunk. The pair
+    #      injection should make the result strictly RICHER, not
+    #      reorder what's already strong. If the top-K is already
+    #      full, the pair just doesn't fit this time.
+    #   2. Require the candidate to have at least 50% of the median
+    #      selected score, so a "paired" but topically-weak chunk
+    #      doesn't dilute the result with off-topic content.
+    #      (Earlier 25% was too lax — e.g. for a meeting-operations
+    #      question, the Process ``#GeneralMeetings`` section is
+    #      paired with ``predicting-milestones``, but pulling that
+    #      page into a "how does a chair run a meeting" answer is
+    #      misleading even though it has SOME term overlap.)
+    if len(enriched := list(selected)) >= limit:
+        return enriched
+    if selected:
+        median_score = sorted(hit[0] for hit in selected)[len(selected) // 2]
+        min_score_for_injection = median_score * 0.5
+    else:
+        min_score_for_injection = 0.0
+
+    for topic_key in sorted(missing):
+        if len(enriched) >= limit:
+            break
+        for cand in candidates:
+            cand_id = _hit_id(cand[1].chunk)
+            if cand_id in seen_ids:
+                continue
+            if cand[0] < min_score_for_injection:
+                # Candidates are sorted descending — everything past
+                # here is even less relevant. Stop scanning.
+                break
+            url_lower = str(cand[1].chunk.get("source_url") or "").lower()
+            if url_covers_topic(url_lower, topic_key) and cand[1].source_type == "guide":
+                enriched.append(cand)
+                seen_ids.add(cand_id)
+                seen_urls.add(url_lower)
+                break
+
+    enriched.sort(key=lambda item: item[0], reverse=True)
     return enriched[:limit]
 
 

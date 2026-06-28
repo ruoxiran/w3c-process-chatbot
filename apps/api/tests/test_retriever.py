@@ -70,6 +70,51 @@ def test_retriever_finds_specific_horizontal_review_request_guidance() -> None:
     assert "i18n-request" in combined or "privacy-request" in combined
 
 
+def test_retriever_pairs_process_rule_with_guidebook_operations() -> None:
+    """The Process Document gives the rule; the Guidebook gives the
+    operations. The corpus encodes that mapping (Guide pages link to
+    Process anchors); ``PROCESS_GUIDE_PAIRS`` materialises it and the
+    retriever surfaces BOTH sides together.
+
+    Wide-review is a good pin: Process ``#doc-reviews`` /
+    ``#wide-review`` and Guidebook ``documentreview`` /
+    ``horizontal-groups`` are tightly coupled in the table and both
+    have rich content in the corpus."""
+    citations = Retriever().retrieve(
+        "What does wide review require and how do I run one?"
+    )
+    urls = [str(c.url).lower() for c in citations]
+
+    process_doc_reviews = any(
+        "policies/process" in u and ("#doc-reviews" in u or "#wide-review" in u)
+        for u in urls
+    )
+    guide_documentreview = any("/guide/documentreview" in u for u in urls)
+    assert process_doc_reviews, "Process #doc-reviews / #wide-review missing"
+    assert guide_documentreview, "Guidebook documentreview chapter missing"
+
+
+def test_retriever_pairing_is_conservative_when_paired_guide_is_off_topic() -> None:
+    """Process ``#GeneralMeetings`` has ``predicting-milestones`` as a
+    paired Guide topic (transition planning often includes meeting
+    timing). But for a question about scribing / Zakim, that pairing
+    is misleading — the rule-level meeting section IS relevant but
+    transition-planning is not. The pairing must NOT inject the
+    weak pair when its candidate score is below threshold."""
+    citations = Retriever().retrieve(
+        "Chair how do I prepare a W3C group meeting?"
+    )
+    urls = [str(c.url).lower() for c in citations[:6]]
+    # Meeting-themed guide chunks must dominate; predicting-milestones
+    # should NOT lead the results just because of the pairing table.
+    meeting_themed = sum(
+        1 for u in urls if "/meetings" in u or "chair/meetings" in u
+    )
+    milestones = sum(1 for u in urls if "predicting-milestones" in u)
+    assert meeting_themed >= 2, f"meeting chunks dominated by milestones: {urls}"
+    assert milestones <= 1, f"too many milestone chunks injected by pairing: {urls}"
+
+
 def test_retriever_surfaces_patent_policy_for_ipr_questions() -> None:
     """The Patent Policy is a separate normative document; before
     round 24 it wasn't in the corpus at all, so IPR / exclusion /

@@ -123,6 +123,123 @@ def is_topic_match(query: str, topic_id: str) -> bool:
     return any(needle in text for needle in topic.query_needles)
 
 
+# ---- Process ↔ Guidebook pairing -----------------------------------------
+#
+# Process is the normative rule ("what is required"). Guidebook is the
+# operational manual ("how to do it"). They are written and maintained
+# as complementary documents — the Guidebook chapters explicitly link
+# to the Process sections they operationalise. A good answer to "how
+# do I X" cites BOTH sides: the rule for authority, the operational
+# chapter for the steps.
+#
+# This table was extracted from the corpus by mining inline
+# ``[link](https://www.w3.org/policies/process/#X)`` references from
+# every Guidebook chunk back to its Process anchor. It's regenerated
+# manually when the Process or Guidebook structure changes; see
+# scripts/mine_process_guide_pairs.py in git history for the script.
+#
+# Key  = Process Document section_id (the anchor after ``#``)
+# Value = guide-topic keys (path under /guide/ or under
+#         /github/w3c/guide/blob/<sha>/, normalised — e.g.
+#         ``documentreview/index``, ``process/charter``,
+#         ``meetings/hybrid-meeting``)
+PROCESS_GUIDE_PAIRS: dict[str, tuple[str, ...]] = {
+    'AB': ('other/elected-body-communication-guidelines',),
+    'AB-TAG-participation': ('other/elected-body-communication-guidelines',),
+    'CharterReview': ('process/charter', 'process/predicting-milestones'),
+    'Consensus': ('chair/role',),
+    'FormalObjection': ('council/index',),
+    'GAEvents': ('meetings/continuity',),
+    'GAGeneral': ('teamcontact/role',),
+    'GeneralMeetings': ('meetings/organize', 'process/predicting-milestones'),
+    'GeneralTermination': ('process/closing-wg-implementation',),
+    'GroupsIG': ('teamcontact/role',),
+    'GroupsWG': ('teamcontact/role',),
+    'Liaisons': ('index',),
+    'MemberSubmission': ('process/member-submission',),
+    'ParticipationCriteria': ('process/suspension',),
+    'Reports': ('transitions/details', 'transitions/wide-review-request', 'process/tilt/normative-references'),
+    'ReqsAllGroups': ('process/charter', 'chair/index', 'teamcontact/index'),
+    'Submission': ('process/member-submission', 'incubation', 'standards-track/rec-tips'),
+    'TAG': ('other/elected-body-communication-guidelines',),
+    'TAG-appointments': ('other/elected-body-communication-guidelines',),
+    'Team': ('process/tilt/index',),
+    'Team-only': ('process/member-submission',),
+    'WGCharter': ('process/charter',),
+    'WGCharterDevelopment': ('chair/role', 'process/predicting-milestones'),
+    'addressing-fo': ('process/charter',),
+    'advisory-board': ('council/index',),
+    'advisory-committee-appeal': ('process/ac-appeal',),
+    'advisory-committee-review': ('process/charter',),
+    'appeal-vote': ('process/charter',),
+    'candidate-amendments': ('process/living-cr-rec',),
+    'candidate-rec': ('process/predicting-milestones', 'github/issue-metadata'),
+    'cfp': ('standards-track/index',),
+    'change-review': ('documentreview/index',),
+    'charter-development': ('process/charter', 'process/adv-notice'),
+    'charter-extension': ('process/charter',),
+    'charter-initiation': ('process/adv-notice', 'process/charter'),
+    'contributor-license': ('process/non-participant-commitment',),
+    'council': ('council/index',),
+    'council-chairing': ('council/council',),
+    'council-composition': ('council/council-steps',),
+    'council-decision': ('council/council',),
+    'council-delegation': ('council/council-steps', 'council/council'),
+    'council-deliberations': ('council/council',),
+    'council-participation': ('council/council',),
+    'council-short-circuit': ('council/council-steps', 'council/council'),
+    'decision-types': ('standards-track/index',),
+    'def-w3c-decision': ('council/council', 'standards-track/index', 'process/closing-wg'),
+    'distributed-meeting': ('meetings/organize',),
+    'editorial-change': ('process/member-submission',),
+    'errata': ('process/predicting-milestones',),
+    'first-wd': ('documentreview/index', 'github/issue-metadata'),
+    'formally-addressed': ('documentreview/index',),
+    'general-requirements': ('chair/role',),
+    'group-decision': ('council/council',),
+    'group-lifecyle': ('process/charter', 'process/closing-wg'),
+    'implementation-experience': ('process/living-cr-rec', 'process/tilt/normative-references'),
+    'initiating-rec-review': ('process/predicting-milestones',),
+    'maturity-stages': ('standards-track/index',),
+    'meeting-schedules': ('tools/new-group',),
+    'note-track': ('github/w3c.json',),
+    'publication': ('editor/index',),
+    'publishing': ('documentreview/index',),
+    'rec-publication': ('github/issue-metadata',),
+    'rec-rescind': ('process/obsolete-rescinded-supserseded',),
+    'rec-track': ('standards-track/rec-tips', 'github/w3c.json', 'process/living-cr-rec'),
+    'rec-track-regression': ('process/living-cr-rec',),
+    'ref-for-team': ('chair/role',),
+    'registering-objections': ('council/council',),
+    'registries': ('github/w3c.json',),
+    'requirements-and-definitions': ('transitions/details',),
+    'submitter': ('process/member-submission',),
+    'substantive-change': ('github/repo-management', 'editor/versioning'),
+    'team': ('process/member-submission', 'council/index', 'chair/index', 'teamcontact/index'),
+    'team-decision': ('process/charter',),
+    'team-fo-mediation': ('council/council',),
+    'technical-architecture-group': ('council/index',),
+    'tooling': ('meetings/hybrid-meeting', 'tools/index'),
+    'transition-cr': ('documentreview/index',),
+    'update-reqs': ('process/living-cr-rec',),
+    'update-requests': ('documentreview/index',),
+    'w3c-council': ('process/charter',),
+    'wide-review': ('documentreview/index', 'process/horizontal-groups', 'process/living-cr-rec'),
+}
+
+
+def paired_guide_topics(section_id: str | None) -> tuple[str, ...]:
+    """Return the Guidebook topic keys that operationalise this Process section.
+
+    Returns an empty tuple when the section isn't in the table — caller
+    should treat that as "no specific operational chapter is paired";
+    don't fabricate one.
+    """
+    if not section_id:
+        return ()
+    return PROCESS_GUIDE_PAIRS.get(section_id, ())
+
+
 # ---- Scoring rules --------------------------------------------------------
 #
 # The retriever needs to nudge results toward authoritative sections for
