@@ -1106,7 +1106,14 @@ export function renderInline(text: string, citations: Citation[]): ReactNode {
   // ``[label](url)`` — tolerate optional whitespace around the URL
   // because models sometimes emit ``[label]( https://… )`` after a
   // line wrap. Strict ``[^)\s]+`` would skip those.
-  const pattern = /\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\(\s*([^)\s]+)\s*\)|\[S(\d+)\]/g;
+  //
+  // ``*[unverified]*`` — backend ``claim_verifier`` (round 29) inserts
+  // this exact token after a sentence whose factual claim has no
+  // citation backing. Rendered as a distinctive warning badge so the
+  // user sees the safety signal instead of literal text. Matched
+  // BEFORE the markdown-link alternative so ``[unverified]`` inside
+  // the asterisks doesn't get parsed as a malformed link.
+  const pattern = /\*\*(.+?)\*\*|`([^`]+)`|\*\[unverified\]\*|\[([^\]]+)\]\(\s*([^)\s]+)\s*\)|\[S(\d+)\]/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let key = 0;
@@ -1118,6 +1125,20 @@ export function renderInline(text: string, citations: Citation[]): ReactNode {
       parts.push(<strong key={`b-${key++}`}>{match[1]}</strong>);
     } else if (match[2] !== undefined) {
       parts.push(<code key={`c-${key++}`}>{match[2]}</code>);
+    } else if (match[0] === "*[unverified]*") {
+      // claim_verifier (backend round 29) marks sentences whose
+      // factual claims aren't backed by any cited excerpt. Render
+      // as a warning badge so the user can tell at a glance which
+      // assertions lack source grounding.
+      parts.push(
+        <span
+          key={`u-${key++}`}
+          className="claim-unverified"
+          title="This claim isn't directly backed by any of the cited excerpts"
+        >
+          unverified
+        </span>
+      );
     } else if (match[3] !== undefined && match[4] !== undefined) {
       const label = match[3];
       const href = match[4];

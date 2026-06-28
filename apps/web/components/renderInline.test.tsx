@@ -63,6 +63,29 @@ function toArray(nodes: ReactNode): ReactNode[] {
 }
 
 describe("renderInline", () => {
+  test("renders *[unverified]* claim marker as a warning badge", () => {
+    const nodes = toArray(renderInline(
+      "Working Groups must do horizontal review *[unverified]*. See more in the Guidebook.",
+      [],
+    ));
+    const spans = nodes.filter(
+      (n): n is ReactElement =>
+        isValidElement(n) && (n.type as unknown) === "span"
+    );
+    // At least one span with the claim-unverified class.
+    const unverified = spans.find(
+      (s) => (s.props as { className?: string }).className === "claim-unverified"
+    );
+    expect(unverified).toBeDefined();
+    // Title attribute provides hover explanation.
+    expect((unverified!.props as { title?: string }).title).toMatch(/cited excerpts/);
+    // The literal "*[unverified]*" token should NOT appear in any
+    // string node — it must have been swallowed by the badge.
+    const textNodes = nodes.filter((n): n is string => typeof n === "string").join("");
+    expect(textNodes).not.toContain("*[unverified]*");
+  });
+
+
   test("tolerates whitespace around the URL inside markdown link parens", () => {
     // Models sometimes wrap the URL with leading or trailing
     // whitespace, especially after a line break:

@@ -1418,6 +1418,27 @@ button:disabled {
   color: #fff;
 }
 
+/* claim_verifier (round 29) inserts ``*[unverified]*`` after a
+   sentence whose factual claim has no citation backing. Rendered as
+   a small warning badge so the user sees the safety signal at a
+   glance — distinct from both citation refs (blue pills) and
+   action links (blue underline). */
+.claim-unverified {
+  background: #fff3cd;  /* warm yellow, accessible against dark text */
+  border: 1px solid #d39e00;
+  border-radius: var(--w3c-radius);
+  color: #856404;
+  cursor: help;
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin: 0 0.2em;
+  padding: 0.05em 0.45em;
+  text-transform: uppercase;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
 .citation-ref-missing {
   color: var(--w3c-muted);
   font-size: 0.78em;
