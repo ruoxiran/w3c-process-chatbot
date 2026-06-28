@@ -252,9 +252,14 @@ class FakeLLMRouter:
 
 
 class FakeOpenAICompatibleClient:
-    def __init__(self) -> None:
+    def __init__(self, json_payloads: dict[str, object] | None = None) -> None:
         self.calls: list[str] = []
         self.last_kwargs: dict = {}
+        # generate_json is called by query_rewriter + HyDE + LLM
+        # router + reranker. Tests can pre-load this dict with
+        # canned responses; everything else returns {}.
+        self.json_payloads = json_payloads or {}
+        self.json_calls: list[dict[str, object]] = []
 
     def generate_answer(self, **kwargs):  # type: ignore[no-untyped-def]
         from app.services.openai_compatible import OpenAICompatibleGeneration
@@ -265,6 +270,15 @@ class FakeOpenAICompatibleClient:
             text="Online model grounded answer with transition guidance [S1].",
             model=kwargs["model"],
         )
+
+    def generate_json(self, *, model: str, prompt: str, num_predict: int = 240):  # type: ignore[no-untyped-def]
+        self.json_calls.append({"model": model, "prompt": prompt, "num_predict": num_predict})
+        # Route by the distinctive opening line of each caller's prompt.
+        if "hypothetical answer" in prompt:
+            return self.json_payloads.get("hyde", {})
+        if "rewrites" in prompt.lower() or "canonical" in prompt.lower():
+            return self.json_payloads.get("rewrite", {})
+        return self.json_payloads.get("default", {})
 
 
 def test_workflow_resolves_w3c_api_entities() -> None:
@@ -469,6 +483,60 @@ def test_workflow_uses_openai_compatible_provider_when_configured() -> None:
     assert client.calls == ["gpt-test"]
     answer_step = next(step for step in response.workflow_trace if step.id == "answer_generator")
     assert "OpenAI-compatible model gpt-test" in answer_step.detail
+
+
+def test_workflow_runs_hyde_when_external_provider_configured() -> None:
+    """HyDE generates a hypothetical answer-shaped passage and runs an
+    extra retrieval pass against it. Wires only for non-template
+    providers; runs in parallel with the query rewriter so the wall-
+    clock cost is bounded by the slower of the two calls."""
+    client = FakeOpenAICompatibleClient(json_payloads={
+        "hyde": {"passage": "Specs move from CR to PR after Wide Review and exit criteria are met."},
+        "rewrite": {"variants": ["how does a W3C spec advance to REC"]},
+    })
+    workflow = ChatWorkflow(
+        Settings(
+            llm_provider="openai-compatible",
+            openai_compatible_model="gpt-test",
+            w3c_api_enabled=False,
+            hyde_enabled=True,
+        ),
+        openai_compatible_client=client,  # type: ignore[arg-type]
+    )
+    response = workflow.run(
+        ChatRequest(message="What should a CSS spec do next to move from CR to REC?", locale="en")
+    )
+    # HyDE was called (the prompt contains the marker phrase).
+    hyde_calls = [c for c in client.json_calls if "hypothetical answer" in str(c["prompt"]).lower()]
+    assert hyde_calls, f"expected a HyDE LLM call; got {[c['prompt'][:60] for c in client.json_calls]}"
+    # And the workflow trace records the extra retrieval pass.
+    step_ids = [step.id for step in response.workflow_trace]
+    assert "hyde_retrieval" in step_ids
+    # Audit records the passage was generated.
+    assert "hyde_passage_chars" in response.audit
+
+
+def test_workflow_skips_hyde_when_disabled_via_settings() -> None:
+    """``hyde_enabled=False`` means no HyDE call, no extra pass, no
+    workflow trace step. Operators on a tight LLM budget can flip
+    this without other behavioral changes."""
+    client = FakeOpenAICompatibleClient(json_payloads={"hyde": {"passage": "x"}})
+    workflow = ChatWorkflow(
+        Settings(
+            llm_provider="openai-compatible",
+            openai_compatible_model="gpt-test",
+            w3c_api_enabled=False,
+            hyde_enabled=False,
+        ),
+        openai_compatible_client=client,  # type: ignore[arg-type]
+    )
+    response = workflow.run(
+        ChatRequest(message="What should a CSS spec do next to move from CR to REC?", locale="en")
+    )
+    hyde_calls = [c for c in client.json_calls if "hypothetical answer" in str(c["prompt"]).lower()]
+    assert hyde_calls == [], "HyDE must not run when disabled"
+    step_ids = [step.id for step in response.workflow_trace]
+    assert "hyde_retrieval" not in step_ids
 
 
 def test_workflow_sends_lighter_prompt_to_external_api_providers() -> None:

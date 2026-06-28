@@ -34,6 +34,7 @@ from app.services.cross_encoder_reranker import (
     rerank_with_cross_encoder,
 )
 from app.services.provider_override import ProviderOverrideError, build_override_client
+from app.services.hyde import generate_hypothetical_passage
 from app.services.query_rewriter import rewrite_query
 from app.services.reranker import rerank_citations
 from app.services.task_planner import build_planned_retrieval_query, plan_task
@@ -721,28 +722,62 @@ class ChatWorkflow:
                 )
             )
 
-        # Multi-query retrieval: ask the LLM for 1-3 W3C-canonical rewrites of
-        # the user's question and merge their citations with the primary pass.
-        # Skipped when the model provider is "template" (e.g. eval workflow)
-        # to keep evals deterministic and offline.
+        # Multi-query retrieval AND HyDE in parallel. Both are LLM
+        # calls that produce alternative retrieval queries:
+        #   * query_rewriter → 1-3 W3C-canonical short rewrites
+        #     (helps lexical recall — BM25 widens by vocabulary)
+        #   * hyde → one 2-4 sentence hypothetical answer passage
+        #     (helps dense recall — semantic shape of an answer is
+        #     closer to actual answer chunks than the question is)
+        # They're complementary, so we run both. Running in parallel
+        # means wall-clock cost is bounded by the slower call, not
+        # the sum. Skipped entirely in template mode to keep evals
+        # deterministic and offline.
         rewrite_variants: list[str] = []
+        hypothetical_passage: str = ""
         if self.settings.llm_provider != "template":
-            try:
-                rewrite_result = rewrite_query(
+            client = self._resolve_llm_client()
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                rewrite_future = executor.submit(
+                    rewrite_query,
                     request.message,
                     settings=self.settings,
-                    client=self._resolve_llm_client(),
+                    client=client,
                     model=router_model,
                 )
-                rewrite_variants = rewrite_result.variants
-                audit["query_rewrites"] = rewrite_variants
-                if rewrite_result.error:
-                    audit["query_rewrite_error"] = rewrite_result.error
+                hyde_future = (
+                    executor.submit(
+                        generate_hypothetical_passage,
+                        request.message,
+                        settings=self.settings,
+                        client=client,
+                        model=router_model,
+                    )
+                    if self.settings.hyde_enabled
+                    else None
+                )
+                try:
+                    rewrite_result = rewrite_future.result()
+                    rewrite_variants = rewrite_result.variants
+                    audit["query_rewrites"] = rewrite_variants
+                    if rewrite_result.error:
+                        audit["query_rewrite_error"] = rewrite_result.error
+                        _degrade("query_rewriter_failed")
+                except Exception as exc:  # pragma: no cover - non-fatal
+                    logger.warning("Query rewriter failed; continuing with single-query retrieval", exc_info=exc)
+                    audit["query_rewrite_error"] = type(exc).__name__
                     _degrade("query_rewriter_failed")
-            except Exception as exc:  # pragma: no cover - non-fatal
-                logger.warning("Query rewriter failed; continuing with single-query retrieval", exc_info=exc)
-                audit["query_rewrite_error"] = type(exc).__name__
-                _degrade("query_rewriter_failed")
+                if hyde_future is not None:
+                    try:
+                        hyde_result = hyde_future.result()
+                        hypothetical_passage = hyde_result.passage
+                        if hyde_result.error:
+                            audit["hyde_error"] = hyde_result.error
+                            _degrade("hyde_failed")
+                    except Exception as exc:  # pragma: no cover - non-fatal
+                        logger.warning("HyDE failed; continuing without hypothetical passage", exc_info=exc)
+                        audit["hyde_error"] = type(exc).__name__
+                        _degrade("hyde_failed")
 
         # Pass the raw user message separately so the retriever can rank by
         # what the user actually asked instead of being biased by the 10+
@@ -761,7 +796,7 @@ class ChatWorkflow:
                 except Exception as exc:  # pragma: no cover - non-fatal
                     logger.warning("Variant retrieval failed for %r", variant, exc_info=exc)
             citations = _merge_citations(citations, extra_hits, limit=12)
-            _record(trace, 
+            _record(trace,
                 WorkflowStep(
                     id="query_rewriter",
                     label="LLM query rewriter",
@@ -772,6 +807,39 @@ class ChatWorkflow:
                     ),
                 )
             )
+
+        # HyDE second pass: embed the hypothetical answer instead of
+        # the bare question. The retriever splits BM25 input (``query``)
+        # from ranking input (``user_message``); for HyDE we pass the
+        # passage as ``query`` so both lexical and dense paths benefit
+        # — and keep the original user message as the ranking signal so
+        # topic-relevance scoring doesn't drift from what the user asked.
+        if hypothetical_passage:
+            try:
+                hyde_hits = self.retriever.retrieve(
+                    hypothetical_passage, user_message=request.message
+                )
+                citations = _merge_citations(citations, hyde_hits, limit=12)
+                audit["hyde_passage_chars"] = len(hypothetical_passage)
+                _record(trace,
+                    WorkflowStep(
+                        id="hyde_retrieval",
+                        label="HyDE hypothetical-passage retrieval",
+                        status="completed",
+                        detail=(
+                            "Generated a hypothetical answer passage and ran an extra retrieval "
+                            "pass against it — broadens dense-retrieval recall over chunks whose "
+                            "answer-shaped prose matches the passage better than the bare question. "
+                            "The hypothesis is informational only; the final answer remains grounded "
+                            "in the citations the user sees."
+                        ),
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - non-fatal
+                logger.warning("HyDE retrieval pass failed; continuing without it", exc_info=exc)
+                audit["hyde_error"] = type(exc).__name__
+                _degrade("hyde_failed")
+
         # Reranker. Try the local cross-encoder first (fast, no LLM quota
         # cost, model-trained for relevance); fall back to the LLM-as-
         # reranker if sentence-transformers isn't installed. Skipped

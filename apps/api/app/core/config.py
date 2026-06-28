@@ -63,6 +63,15 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-m3"
     ollama_embedding_model: str = "qwen3-embedding:4b"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    # HyDE — Hypothetical Document Embeddings. When True the workflow
+    # asks the LLM for a short hypothetical answer first, then runs an
+    # extra retrieval pass using THAT as the query. Helps dense
+    # retrieval find chunks whose answer-shaped prose is closer to
+    # the hypothetical than to the bare question. Adds one LLM call
+    # per request — runs in parallel with the existing query
+    # rewriter so wall-clock overhead is bounded by the slower of
+    # the two.
+    hyde_enabled: bool = True
     # Cross-encoder reranker takes priority over the LLM-as-reranker when
     # enabled. The dependency (sentence-transformers + torch + ~600MB model
     # download on first use) is optional; if loading fails the workflow
