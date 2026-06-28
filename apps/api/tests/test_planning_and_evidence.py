@@ -26,6 +26,32 @@ def test_task_planner_promotes_horizontal_review_to_first_class_workflow() -> No
     assert any("needs-resolution" in query.lower() for query in plan.search_queries)
 
 
+def test_task_planner_routes_spec_authoring_tool_questions_to_author_spec() -> None:
+    """Questions about ReSpec / Bikeshed / Pubrules / Echidna / HTMLdiff
+    are spec-AUTHORING / publication tooling — they used to fall
+    through every keyword rule and end up labelled
+    ``advance_specification``, which steered retrieval toward REC-
+    track transition content instead of editor / repo-management /
+    publication tooling. Pin the fix so a future refactor doesn't
+    drop authoring-tool routing on the floor."""
+    for query in [
+        "ReSpec or Bikeshed for my new spec?",
+        "how do I run pubrules before publishing",
+        "configure Echidna for auto-publication",
+        "use HTMLdiff to produce the diff for CR",
+        "how do I author a W3C spec",
+        "用 respec 还是 bikeshed",
+    ]:
+        plan = plan_task(query)
+        assert plan.intent_type == "author_spec", f"misclassified: {query!r} → {plan.intent_type}"
+    # Retrieval seeds must point at the editor / publication chapters,
+    # not at REC-track transition pages.
+    plan = plan_task("how do I author a W3C spec")
+    joined = " ".join(plan.search_queries).lower()
+    assert "editor" in joined
+    assert "publication" in joined or "pubrules" in joined or "echidna" in joined
+
+
 def test_task_planner_routes_scribing_questions_to_run_group_process() -> None:
     """"how to scribe?" used to fall through to ``advance_specification``
     because ``scribe`` wasn't in the run-group-process keyword list,

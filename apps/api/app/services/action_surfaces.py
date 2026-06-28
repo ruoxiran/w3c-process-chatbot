@@ -66,6 +66,23 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
             url="https://www.w3.org/guide/transitions/implementation-report.html",
             notes="Use when documenting two-implementer evidence ahead of CR → PR transition.",
         ),
+        # Publication tooling — what an editor actually clicks/runs
+        # when the rule says "publish a new draft / snapshot".
+        ActionSurface(
+            label="W3C Pubrules — pre-publication validator",
+            url="https://www.w3.org/pubrules/",
+            notes="Run before requesting publication; surfaces SOTD / SoTD / boilerplate / Process-conformance issues.",
+        ),
+        ActionSurface(
+            label="Echidna — automated publication",
+            url="https://github.com/w3c/echidna/wiki",
+            notes="Lets a WG auto-publish a WD or CR Snapshot from a repo without a manual Team handover. Requires a configured ``w3c.json`` + green pubrules.",
+        ),
+        ActionSurface(
+            label="HTMLdiff — diff two spec versions",
+            url="https://services.w3.org/htmldiff",
+            notes="Use to produce the change-summary required for CR / PR transitions of an existing REC.",
+        ),
     ],
     "horizontal_review": [
         ActionSurface(
@@ -112,6 +129,18 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
         ActionSurface(
             label="Charter extensions guide",
             url="https://www.w3.org/guide/process/charter-extensions.html",
+        ),
+        # Setup tooling — what the chair / Team contact uses AFTER
+        # a charter ships to actually stand the group up.
+        ActionSurface(
+            label="New-group request form (Guidebook tools)",
+            url="https://www.w3.org/guide/tools/new-group.html",
+            notes="Walks through the chair-confirmation + Team-resource ticketing the W3C Operations team needs.",
+        ),
+        ActionSurface(
+            label="W3C Repo Manager — provision GitHub repos for a group",
+            url="https://labs.w3.org/repo-manager/",
+            notes="Used after a charter ships to spin up the WG/IG's GitHub repos with the right w3c.json / labels / branch protections.",
         ),
     ],
     "handle_objection_or_appeal": [
@@ -232,6 +261,47 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
         ActionSurface(
             label="Process — Reviews and Review Responsibilities",
             url="https://www.w3.org/policies/process/#doc-reviews",
+        ),
+    ],
+    "author_spec": [
+        # Spec authoring toolchain. Process tells WHAT the document
+        # needs to contain (SOTD, references, conformance, ...);
+        # these tools are HOW the editor actually produces the
+        # marked-up document that satisfies pubrules.
+        ActionSurface(
+            label="ReSpec — JS-based spec authoring framework",
+            url="https://respec.org/docs/",
+            notes="Editors write HTML with respec markers; the framework injects boilerplate (SOTD, references, conformance) at render time. Most W3C specs use ReSpec.",
+        ),
+        ActionSurface(
+            label="Bikeshed — preprocessor for spec markup",
+            url="https://speced.github.io/bikeshed/",
+            notes="Alternative to ReSpec. Source-file → HTML preprocessor with strong cross-referencing. Used by CSS, WHATWG-style specs.",
+        ),
+        ActionSurface(
+            label="W3C Pubrules — pre-publication validator",
+            url="https://www.w3.org/pubrules/",
+            notes="Validates a draft against W3C's publication conformance rules. Run before requesting publication or invoking Echidna.",
+        ),
+        ActionSurface(
+            label="Echidna — automated publication",
+            url="https://github.com/w3c/echidna/wiki",
+            notes="WGs configured for Echidna can auto-publish WD / CR-Snapshot from a repo without a manual Team handover.",
+        ),
+        ActionSurface(
+            label="HTMLdiff — generate version diffs",
+            url="https://services.w3.org/htmldiff",
+            notes="Required output for CR / PR / REC re-publication: a human-readable diff between the new draft and the previous published version.",
+        ),
+        ActionSurface(
+            label="Editor's role guide (Guidebook)",
+            url="https://www.w3.org/guide/editor/",
+            notes="Process-side responsibilities of a spec editor — what to publish when, who reviews, exit criteria documentation.",
+        ),
+        ActionSurface(
+            label="Repository management guide (Guidebook)",
+            url="https://www.w3.org/guide/github/repo-management.html",
+            notes="How to set up the spec repository: w3c.json, branch protection, automated publication triggers.",
         ),
     ],
     "explain_process": [

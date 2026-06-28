@@ -90,6 +90,11 @@ _VALID_INTENT_TYPES = frozenset({
     "transfer_incubation_to_wg",
     "check_patent_policy",
     "handle_objection_or_appeal",
+    # Spec-authoring tools (ReSpec / Bikeshed / Pubrules / Echidna /
+    # HTMLdiff). The Process and Guidebook describe WHAT must happen;
+    # this intent surfaces the actual tools the editor uses to produce
+    # and publish the document.
+    "author_spec",
     "explain_process",
 })
 
@@ -160,6 +165,27 @@ def _intent_type(text: str) -> str:
         return "run_group_process"
     if _has(text, ["community group", "incubation", "cg ", "转入 working group"]):
         return "transfer_incubation_to_wg"
+    # Spec-authoring tools — ReSpec / Bikeshed / Pubrules / Echidna /
+    # HTMLdiff / spec editing in general. Goes BEFORE the advance_
+    # specification fallback below because "publication" and "publish"
+    # are in that list, and the tool-question rephrasings ("how do I
+    # auto-publish via echidna" / "how do I validate my draft with
+    # pubrules") otherwise fall through and get the wrong intent.
+    if _has(text, [
+        "respec", "re-spec", "bikeshed", "pubrules", "echidna", "htmldiff",
+        "spec editor", "spec authoring", "spec template", "edit a spec",
+        "write a spec", "writing a spec", "author a spec", "author a w3c spec",
+        "authoring a spec", "create a spec", "creating a spec",
+        "spec source", "spec markup",
+        "speced.github.io", "respec.org",
+        # Repo / publication tooling
+        "repo manager", "repo-manager",
+        "auto-publication", "auto-publish", "automated publication",
+        # WBS / Call for Review tooling
+        "wbs", "call for review", "cfr ",
+        "编辑器", "撰写规范", "编写规范",
+    ]):
+        return "author_spec"
     if _has(
         text,
         [
@@ -271,6 +297,22 @@ def _search_queries(
         ])
     elif intent_type == "transfer_incubation_to_wg":
         seed.extend(["Community Group specification transfer Working Group incubation", "Guidebook CG transition Working Group"])
+    elif intent_type == "author_spec":
+        # Spec-authoring tools — most of the canonical docs live
+        # OUTSIDE the corpus (respec.org / speced.github.io /
+        # services.w3.org/htmldiff are reference action surfaces,
+        # not indexed). What IS in the corpus: the Guidebook editor
+        # role chapter, repo-management chapter, pubrules-conformance
+        # content, github/w3c.json chapter. Steer retrieval to those
+        # so the model has SOMETHING to ground its "use ReSpec or
+        # Bikeshed" recommendation against.
+        seed.extend([
+            "Guidebook editor role spec author responsibilities",
+            "Guidebook github repo management w3c.json automated publication",
+            "pubrules publication rules SOTD boilerplate conformance",
+            "echidna automated publication working draft snapshot",
+            f"{subject} editor draft publication tooling",
+        ])
     elif intent_type == "handle_objection_or_appeal":
         seed.extend(["Formal Objection appeal process", "Guidebook formal objection escalation"])
     elif intent_type == "check_patent_policy":
