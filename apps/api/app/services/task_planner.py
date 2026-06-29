@@ -127,6 +127,11 @@ _VALID_INTENT_TYPES = frozenset({
     # /guide/process/election.html + /guide/process/elections.html +
     # /other/elected-body-communication-guidelines.html.
     "elected_body",
+    # External-org liaison and cross-SDO coordination — IETF, WHATWG,
+    # ISO, ECMA, IEEE. Distinct from ``coordinate_with_staff_contact``
+    # (which is the W3C Team Contact role) and from
+    # ``handle_objection_or_appeal`` (intra-W3C escalation).
+    "external_liaison",
     "explain_process",
 })
 
@@ -173,6 +178,23 @@ def _intent_type(text: str) -> str:
     # Placed before ``advance_specification`` / staff_contact so
     # questions like "how do I vote in an AB election?" don't get
     # caught as a transition or a Team-Contact question.
+    # External-org liaison — WHATWG / IETF / ISO / ECMA / IEEE
+    # coordination. Goes BEFORE the generic ``staff_contact`` rule
+    # so "how do I liaise with IETF" doesn't get caught as a
+    # Staff-Contact question.
+    if _has(text, [
+        "whatwg", "html living standard", "html-living",
+        "ietf", "rfc", "ietf draft",
+        " iso ", "iso standard", "joint w3c",
+        "ecma", "ecma international", "ecmascript committee",
+        "ieee", "ieee standard",
+        "cross-sdo", "cross-organization", "cross-organisation",
+        "cross organization", "external organization",
+        "external organisation", "external sdo",
+        "liaise", "liaison with", "liaison agreement",
+        "joint deliverable",
+    ]):
+        return "external_liaison"
     if _has(text, [
         "ab election", "ab elections", "tag election", "tag elections",
         "advisory board election", "advisory board nominat",
@@ -284,6 +306,14 @@ def _intent_type(text: str) -> str:
         "subscribe to a", "subscribe to the",
         "subscribe to public-", "subscribe to member-",
         "邮件列表", "订阅",
+        # Process / Recommendation translations — owned by W3C
+        # Communications Team via the Translation guidelines.
+        "translate the process", "translate a recommendation",
+        "translate a rec", "process translation",
+        "recommendation translation", "translate to french",
+        "translate to chinese", "french translation of",
+        "chinese translation of", "translation of a recommendation",
+        "translations of the process",
         "通讯团队", "公告", "宣布发布",
     ]):
         return "communications_announcement"
@@ -409,6 +439,13 @@ def _intent_type(text: str) -> str:
             "maintenance update", "rec maintenance",
             "post-rec maintenance", "post-publication maintenance",
             "existing recommendation", "published recommendation",
+            # Implementation reports — operationally part of CR exit
+            # criteria. Without these the question fell through to
+            # explain_process and the model never saw the transition
+            # action surfaces.
+            "implementation report", "impl report",
+            "implementation report format", "file the impl",
+            "file an implementation report",
             # Bare 2-letter "cr" / "rec" REMOVED in round 35 — they
             # substring-match harmless words ("di-REC-tor" /
             # "REC-ommend" / "REC-ipe", "con-CR-ete" / "se-CR-et").
@@ -596,6 +633,17 @@ def _search_queries(
             "Process Advisory Board Technical Architecture Group composition",
             "elected body communication guidelines AB TAG",
             f"{subject} AB TAG election",
+        ])
+    elif intent_type == "external_liaison":
+        # IETF / WHATWG / ISO / ECMA / IEEE coordination. Steer at
+        # /guide/chair/role + /guide/teamcontact/role (which list
+        # liaison responsibilities) + Process §3.2.2 Liaisons.
+        seed.extend([
+            "Guidebook chair team contact liaison external organization",
+            "Process Liaisons cross-SDO coordination joint deliverable",
+            "IETF RFC W3C joint coordination",
+            "WHATWG HTML Living Standard coordination",
+            "ISO joint W3C standard normative reference",
         ])
     elif intent_type == "handle_objection_or_appeal":
         seed.extend(["Formal Objection appeal process", "Guidebook formal objection escalation"])

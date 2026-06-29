@@ -476,6 +476,34 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
             notes="Normative definition of the TAG: role, composition, term length.",
         ),
     ],
+    "external_liaison": [
+        # IETF / WHATWG / ISO / ECMA cross-SDO coordination.
+        ActionSurface(
+            label="Process — Liaisons (§3.2.2)",
+            url="https://www.w3.org/policies/process/#Liaisons",
+            notes="Normative definition of W3C's liaison relationships with other organizations.",
+        ),
+        ActionSurface(
+            label="Guidebook — Staff Contact role (liaison duties)",
+            url="https://www.w3.org/guide/teamcontact/role.html",
+            notes="Includes the Team Contact's responsibilities for managing liaisons with external SDOs.",
+        ),
+        ActionSurface(
+            label="W3C / WHATWG HTML coordination",
+            url="https://www.w3.org/blog/news/archives/9735",
+            notes="The 2019 MoU under which W3C and WHATWG coordinate on the HTML and DOM standards. WHATWG now publishes the Living Standard; W3C may republish reviewed snapshots.",
+        ),
+        ActionSurface(
+            label="W3C / IETF coordination",
+            url="https://www.w3.org/2002/IETF-W3C/",
+            notes="Long-standing inter-organizational coordination for shared work areas (URI, HTTP, security). Joint deliverables go through both organizations' processes.",
+        ),
+        ActionSurface(
+            label="Email the W3C Team about a new liaison",
+            email="w3t@w3.org",
+            notes="To propose or formalize a new cross-SDO liaison, contact the Team — they coordinate Memoranda of Understanding and joint deliverables.",
+        ),
+    ],
     "explain_process": [
         ActionSurface(
             label="W3C Process Document",
