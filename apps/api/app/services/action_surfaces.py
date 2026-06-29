@@ -414,6 +414,68 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
             notes="Canonical contact for prospective members. Fee structure depends on org size + country tier — Team will guide.",
         ),
     ],
+    "group_lifecycle": [
+        # Group endings — close a WG, suspend a participant,
+        # rescind a Recommendation, post-closure note handling.
+        ActionSurface(
+            label="Guidebook — closing a Working Group",
+            url="https://www.w3.org/guide/process/closing-wg-implementation.html",
+            notes="Practical guide for winding down a WG: what to publish, what happens to active drafts, repository transfer.",
+        ),
+        ActionSurface(
+            label="Guidebook — participant suspension",
+            url="https://www.w3.org/guide/process/suspension.html",
+            notes="The mechanics of suspending a participant from a group (rare; usually after Code-of-Conduct escalation).",
+        ),
+        ActionSurface(
+            label="Guidebook — obsolete, rescinded, superseded",
+            url="https://www.w3.org/guide/process/obsolete-rescinded-supserseded.html",
+            notes="How to mark a published Recommendation as obsolete, rescinded, or superseded by a successor spec.",
+        ),
+        ActionSurface(
+            label="Process — Rescinding a Recommendation (§6.7)",
+            url="https://www.w3.org/policies/process/#rec-rescind",
+            notes="Normative procedure for rescinding a published REC. Includes the AC Review requirement.",
+        ),
+        ActionSurface(
+            label="Email the W3C Team about a group closure",
+            email="w3t@w3.org",
+            notes="Generic Team contact — for group-closure logistics, repo transfer, list archival, the Team will route internally.",
+        ),
+    ],
+    "elected_body": [
+        # AB / TAG elections, nominations, composition.
+        ActionSurface(
+            label="Guidebook — organizing an AB or TAG election",
+            url="https://www.w3.org/guide/process/election.html",
+            notes="Step-by-step for running an election: timeline, nomination period, voting window, results announcement.",
+        ),
+        ActionSurface(
+            label="Guidebook — Elected Body Communication Guidelines",
+            url="https://www.w3.org/guide/other/elected-body-communication-guidelines.html",
+            notes="How AB / TAG members should communicate — what's confidential, what's public, what's W3C-only.",
+        ),
+        ActionSurface(
+            label="W3C Advisory Board page",
+            url="https://www.w3.org/2002/ab/",
+            notes="The AB landing page — current members, charter, meeting minutes.",
+        ),
+        ActionSurface(
+            label="W3C TAG page",
+            url="https://www.w3.org/2001/tag/",
+            notes="The TAG landing page — current members, design reviews, findings.",
+        ),
+        ActionSurface(
+            label="Process — Advisory Board (§2.5)",
+            url="https://www.w3.org/policies/process/#AB",
+            notes="Normative definition of the Advisory Board: role, composition, term length.",
+        ),
+        ActionSurface(
+            label="Process — Technical Architecture Group (§2.6)",
+            url="https://www.w3.org/policies/process/#TAG",
+            notes="Normative definition of the TAG: role, composition, term length.",
+        ),
+    ],
     "explain_process": [
         ActionSurface(
             label="W3C Process Document",

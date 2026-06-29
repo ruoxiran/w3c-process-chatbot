@@ -74,6 +74,33 @@ PROCESS_TOPICS = {
         "editor",
         "spec editor",
         "deliverable editor",
+        # Group-lifecycle events. Round 34 audit found these were
+        # all rejected as OUT-OF-SCOPE because the governance topic
+        # didn't include them as keywords.
+        "nominate",
+        "nomination",
+        "close a working group",
+        "close a wg",
+        "close the working group",
+        "close the group",
+        "group closure",
+        "group closes",
+        "wg closes",
+        "the group closes",
+        "wind down",
+        "terminate",
+        "rescind",
+        "obsolete",
+        "superseded",
+        "suspend",
+        "suspension",
+        "participant suspension",
+        # CR exit criteria — "implementation" alone is too broad;
+        # tie to W3C context.
+        "independent implementation",
+        "two implementations",
+        "implementation report",
+        "implementation experience",
         "章程",
         "工作组",
         "主席",

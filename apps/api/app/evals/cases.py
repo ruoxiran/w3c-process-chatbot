@@ -303,11 +303,15 @@ EVAL_CASES = [
         name="rescinding-recommendation",
         message="How can a W3C Recommendation be rescinded or made obsolete?",
         expected_in_scope=True,
-        expected_intent="advance_specification",
+        # Updated in round 34: ``group_lifecycle`` is the correct
+        # intent — rescinding is a lifecycle ending, not an advance.
+        # Previously labelled ``advance_specification`` because no
+        # better intent existed.
+        expected_intent="group_lifecycle",
         expected_source_types=("process", "guide"),
         expected_answer_terms=("Recommendation",),
         min_confidence=0.55,
-        tags=("rescinding", "obsolete"),
+        tags=("rescinding", "obsolete", "lifecycle"),
     ),
     EvalCase(
         name="registry-track",
@@ -641,6 +645,59 @@ EVAL_CASES = [
         expected_source_types=("guide",),
         min_confidence=0.55,
         tags=("tooling", "author-spec", "echidna", "intent-routing"),
+    ),
+    EvalCase(
+        name="tag-nomination-routes-to-elected-body",
+        message="how do I nominate someone to the TAG?",
+        expected_in_scope=True,
+        expected_intent="elected_body",
+        min_confidence=0.55,
+        tags=("intent-routing", "tag", "election", "scope"),
+    ),
+    EvalCase(
+        name="ab-election-routes-to-elected-body",
+        message="when is the next AB election?",
+        expected_in_scope=True,
+        expected_intent="elected_body",
+        min_confidence=0.55,
+        tags=("intent-routing", "ab", "election"),
+    ),
+    EvalCase(
+        name="close-wg-routes-to-group-lifecycle",
+        message="how do I close a Working Group?",
+        expected_in_scope=True,
+        expected_intent="group_lifecycle",
+        min_confidence=0.55,
+        tags=("intent-routing", "wg-close", "lifecycle"),
+    ),
+    EvalCase(
+        name="rescind-recommendation-routes-to-group-lifecycle",
+        message="how to rescind a Recommendation?",
+        expected_in_scope=True,
+        expected_intent="group_lifecycle",
+        min_confidence=0.55,
+        tags=("intent-routing", "rescind", "lifecycle"),
+    ),
+    EvalCase(
+        name="note-after-group-close-in-scope",
+        message="what happens to a Note after the Group closes?",
+        # Round 34 audit found this was falsely rejected as
+        # OUT-OF-SCOPE. Pin that group-closure question now passes
+        # the scope gate AND routes to group_lifecycle.
+        expected_in_scope=True,
+        expected_intent="group_lifecycle",
+        min_confidence=0.55,
+        tags=("scope", "lifecycle"),
+    ),
+    EvalCase(
+        name="independent-implementation-in-scope",
+        message="what counts as an independent implementation?",
+        # Implementation requirements are CR exit criteria — was
+        # falsely rejected as OUT-OF-SCOPE before the
+        # ``independent implementation`` scope keyword landed.
+        expected_in_scope=True,
+        min_confidence=0.55,
+        tags=("scope", "cr-exit-criteria"),
     ),
     EvalCase(
         name="tpac-registration-routes-to-event",

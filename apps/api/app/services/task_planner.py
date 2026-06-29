@@ -111,6 +111,22 @@ _VALID_INTENT_TYPES = frozenset({
     # vs public, member dues. Mostly maps to /guide/members and the
     # Process §2.1 Members chapter.
     "w3c_membership",
+    # Group lifecycle endings: closing a WG, suspending a
+    # participant, rescinding a published Recommendation, what
+    # happens to Notes / repos after group closure. Distinct from
+    # ``charter_or_recharter`` (which is about starting / extending)
+    # and from ``advance_specification`` (which is about advancing
+    # through stages, not ending). Lives in /guide/process/
+    # closing-wg-implementation.html + suspension.html + Process
+    # §6.x rescind.
+    "group_lifecycle",
+    # AB / TAG elections, nominations, elected-body composition.
+    # Distinct from ``coordinate_with_staff_contact`` (Team Contact
+    # roles) and from ``handle_objection_or_appeal`` (FO/appeal
+    # mechanics). Has ~105 chunks of corpus grounding —
+    # /guide/process/election.html + /guide/process/elections.html +
+    # /other/elected-body-communication-guidelines.html.
+    "elected_body",
     "explain_process",
 })
 
@@ -124,6 +140,58 @@ def _intent_type(text: str) -> str:
     # otherwise override these correct keyword classifications.
     if _has(text, ["formal objection", "appeal", "异议", "申诉"]):
         return "handle_objection_or_appeal"
+    # Group-lifecycle endings — close a WG, suspend a participant,
+    # rescind a Recommendation, what happens to a Note after closure.
+    # Placed early so it catches BEFORE charter / advance / review
+    # rules grab keywords like "Working Group" or "Recommendation".
+    if _has(text, [
+        "close a working group", "close the working group",
+        "close a wg", "close the wg", "close the group",
+        "closing a working group", "closing a wg",
+        "group closure", "wind down",
+        "terminate a group", "terminate the group",
+        "rescind", "rescinding", "rescinded",
+        "obsolete recommendation", "supersede a recommendation",
+        "obsolete a rec",
+        "suspend a participant", "suspend participant",
+        "participant suspension", "suspension of a participant",
+        # Looser end-of-life phrasings — "after the group closes",
+        # "after the WG closes", "the group closes", etc.
+        "group closes", "wg closes",
+        "after the group closes", "after a group closes",
+        "after the wg closes",
+        "what happens to a note", "what happens to a rec",
+        "what happens to the spec when",
+        "关闭工作组", "终止", "暂停",
+    ]):
+        return "group_lifecycle"
+    # AB / TAG elections + nominations + elected-body composition.
+    # Placed before ``advance_specification`` / staff_contact so
+    # questions like "how do I vote in an AB election?" don't get
+    # caught as a transition or a Team-Contact question.
+    if _has(text, [
+        "ab election", "ab elections", "tag election", "tag elections",
+        "advisory board election", "advisory board nominat",
+        "tag nominat", "nominate to the tag", "nominate to the ab",
+        # Keep loose phrasings — "nominate someone to the TAG" should
+        # work even though the longer literal "nominate to the tag"
+        # doesn't appear due to the intervening "someone".
+        "nominate to tag", "nominate for tag", "nominate to ab",
+        "nominate for ab", "nominee to the tag", "nominee to the ab",
+        # "nominate someone to the TAG" / "nominate a person to AB"
+        # — short keywords so any intervening pronoun works.
+        "nominate", "nominee", "nominated", "nomination",
+        "elected body", "elected bodies",
+        "ab member", "ab members", "tag member", "tag members",
+        "advisory board",
+        "technical architecture group",
+        "who's on the advisory board", "who is on the advisory board",
+        "ab seat", "tag seat",
+        "nomination period", "nomination procedure",
+        "ab/tag", "ab and tag",
+        "选举", "提名",
+    ]):
+        return "elected_body"
     if _has(text, [
         "patent", "ipr", "exclusion opportunity", "专利",
         # Employer / contribution / IPR commitment questions are
@@ -480,6 +548,26 @@ def _search_queries(
             "Process Members Member Agreement Patent Policy commitment",
             "Guidebook becoming a W3C member application",
             "member-only access invited expert participation",
+        ])
+    elif intent_type == "group_lifecycle":
+        # Closing a WG / suspending a participant / rescinding a
+        # Recommendation. Steer at /guide/process/
+        # closing-wg-implementation.html + Process §3.x suspension
+        # + Process §6.7 obsolete-rescinded-superseded.
+        seed.extend([
+            "Guidebook closing Working Group implementation wind down",
+            "Process suspension participant suspend conformance",
+            "Process rescind obsolete superseded Recommendation",
+            "Guide closing-wg what happens to spec note after closure",
+            f"{subject} group closure rescind",
+        ])
+    elif intent_type == "elected_body":
+        # AB / TAG elections + nominations.
+        seed.extend([
+            "Guidebook AB TAG election nomination procedure timeline",
+            "Process Advisory Board Technical Architecture Group composition",
+            "elected body communication guidelines AB TAG",
+            f"{subject} AB TAG election",
         ])
     elif intent_type == "handle_objection_or_appeal":
         seed.extend(["Formal Objection appeal process", "Guidebook formal objection escalation"])
