@@ -643,6 +643,53 @@ EVAL_CASES = [
         tags=("tooling", "author-spec", "echidna", "intent-routing"),
     ),
     EvalCase(
+        name="ac-rep-question-in-scope",
+        message="who is the AC representative for my organization?",
+        # Round 32: PROCESS_TOPICS missed "AC representative" / "advisory
+        # committee" so the scope gate was rejecting these as out-of-scope.
+        # AC reps are a core Process role — questions about them MUST be
+        # in-scope.
+        expected_in_scope=True,
+        min_confidence=0.55,
+        tags=("scope", "ac-rep", "governance"),
+    ),
+    EvalCase(
+        name="ac-vote-routes-to-comm",
+        message="how does the AC vote on a recommendation?",
+        # Round 32: "AC vote on a recommendation" used to route to
+        # advance_specification (via the bare ``recommendation`` keyword)
+        # and surface ``w3t-tr@w3.org``. Correct routing is
+        # communications_announcement — Comm Team coordinates AC
+        # reviews via WBS surveys.
+        expected_in_scope=True,
+        expected_intent="communications_announcement",
+        min_confidence=0.55,
+        tags=("intent-routing", "ac-vote", "comm-team"),
+    ),
+    EvalCase(
+        name="add-editor-routes-to-author-spec",
+        message="how to add a new editor to a spec?",
+        # Round 32: "add an editor" used to fall through every rule
+        # and end at advance_specification — wrong because editor
+        # management is an authoring concern.
+        expected_in_scope=True,
+        expected_intent="author_spec",
+        min_confidence=0.55,
+        tags=("intent-routing", "editor", "author-spec"),
+    ),
+    EvalCase(
+        name="mailing-list-routes-to-comm",
+        message="how do I subscribe to a W3C mailing list?",
+        # Round 32: "subscribe to a mailing list" used to route to
+        # run_group_process (via the bare ``meeting``-adjacent
+        # keyword chain) and cite a transition page. Mailing-list
+        # management is owned by the Communications Team.
+        expected_in_scope=True,
+        expected_intent="communications_announcement",
+        min_confidence=0.55,
+        tags=("intent-routing", "mailing-list", "comm-team"),
+    ),
+    EvalCase(
         name="announce-publication-uses-comm-team",
         message="how to announce new publications?",
         expected_in_scope=True,

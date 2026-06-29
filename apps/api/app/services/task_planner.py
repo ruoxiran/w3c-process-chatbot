@@ -154,10 +154,11 @@ def _intent_type(text: str) -> str:
     )
     if has_transition_verb and has_stage_term:
         return "advance_specification"
-    # Communications / announcement / press release / Call-for-Review.
-    # Goes BEFORE the broad "review" keyword check below because
-    # "Call for Review" otherwise matches via the bare ``review``
-    # substring and routes to plan_or_complete_review — which feeds
+    # Communications / announcement / press release / Call-for-Review
+    # / AC review mechanics / mailing-list subscription. Goes BEFORE
+    # the broad "review" keyword check below because "Call for
+    # Review" / "AC review" otherwise match via the bare ``review``
+    # substring and route to plan_or_complete_review — which feeds
     # the model the wrong action surface (``w3t-tr@w3.org`` instead
     # of ``w3t-comm@w3.org``).
     if _has(text, [
@@ -168,6 +169,22 @@ def _intent_type(text: str) -> str:
         "w3t-comm", "www-announce", "public-review-announce",
         "blog post", "blog about", "social media post",
         "call for review", "cfr ",
+        # AC procedural mechanics — voting, decisions, approval.
+        # These are coordinated by the Communications Team via the
+        # WBS survey system; same action-surface set applies.
+        "ac vote", "ac votes", "advisory committee vote",
+        "ac decision", "advisory committee decision",
+        "ac approval", "advisory committee approval",
+        "vote on a recommendation", "vote on a rec",
+        # Mailing-list subscription / management. The Communications
+        # Team owns list creation + subscription policy. Keep these
+        # short — "subscribe to a W3C mailing list" must match even
+        # with an intervening "W3C" / "public" / "member" qualifier.
+        "mailing list",
+        "mailing-list",
+        "subscribe to a", "subscribe to the",
+        "subscribe to public-", "subscribe to member-",
+        "邮件列表", "订阅",
         "通讯团队", "公告", "宣布发布",
     ]):
         return "communications_announcement"
@@ -211,6 +228,13 @@ def _intent_type(text: str) -> str:
         "authoring a spec", "create a spec", "creating a spec",
         "spec source", "spec markup",
         "speced.github.io", "respec.org",
+        # Adding / removing / registering editors on a spec.
+        # Without these, "how to add a new editor?" fell through to
+        # advance_specification because it has no transition keyword
+        # but DOES eventually match generic "spec" terms.
+        "add an editor", "add a new editor", "remove an editor",
+        "new editor", "additional editor", "register as a spec editor",
+        "register as an editor", "register an editor",
         # Repo / publication tooling
         "repo manager", "repo-manager",
         "auto-publication", "auto-publish", "automated publication",
