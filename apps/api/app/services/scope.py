@@ -7,9 +7,17 @@ _ZERO_WIDTH_RE = re.compile(r"[​-‏‪-‮⁠-⁤﻿]")
 
 
 # Unambiguously W3C-domain terms — matching any of these means high-confidence in-scope
+# Round 35: bare 2-letter ``cr`` / ``rec`` / ``wd`` REMOVED. They
+# substring-match harmless words ("re-CR-eation", "REC-ipe",
+# "di-REC-tor", "REC-ommend", "a-WD-justment"), letting non-W3C
+# queries like "recommend a good Italian restaurant" pass the
+# scope gate. Real W3C questions about CR/REC/WD use the longer
+# forms ("Candidate Recommendation" / "Working Draft") or
+# preposition-bounded phrases ("to CR" / "from REC") that the
+# task planner's ``has_stage_term`` check handles separately.
 STRONG_TOPIC_KEYWORDS = frozenset([
-    "fpwd", "working draft", "candidate recommendation", "cr", "crd", "crs",
-    "recommendation", "rec", "proposed recommendation", "推荐标准", "候选推荐",
+    "fpwd", "working draft", "candidate recommendation", "crd", "crs",
+    "recommendation", "proposed recommendation", "推荐标准", "候选推荐",
     "charter", "recharter", "章程",
     "staff contact", "team contact", "职责",
     "horizontal review", "wide review", "横向审查",
@@ -26,13 +34,20 @@ PROCESS_TOPICS = {
     "recommendation_track": [
         "fpwd",
         "working draft",
-        "wd",
+        # Bare 2-letter ``wd`` / ``cr`` / ``rec`` REMOVED — see
+        # STRONG_TOPIC_KEYWORDS comment above. Longer forms below
+        # cover real W3C usage without false positives.
+        # Preposition-bounded stage shorthand catches the natural
+        # "from CR" / "to REC" / "CR to PR" phrasings without
+        # leaking on "diREctor" or "recommend a restaurant".
+        " cr ", " cr,", "cr to", "from cr", "to cr", "in cr", "at cr",
+        " rec ", " rec,", "rec to", "from rec", "to rec", "in rec",
+        " pr ", " pr,", "pr to", "from pr", "to pr",
+        " wd ", " wd,", "wd to", "from wd", "to wd",
         "candidate recommendation",
-        "cr",
         "crd",
         "crs",
         "recommendation",
-        "rec",
         "spec",
         "specification",
         "proposed recommendation",
@@ -74,6 +89,27 @@ PROCESS_TOPICS = {
         "editor",
         "spec editor",
         "deliverable editor",
+        # Scribe is a Process role (meeting minutes). The
+        # task_planner already routes scribe questions to
+        # run_group_process, but the SCOPE gate also needs to
+        # recognise the bare "how to scribe?" phrasing.
+        "scribe",
+        "scribing",
+        "minute-taker",
+        # Invited Expert is a Process role for non-Member individuals
+        # contributing to a WG. Missing before round 35 meant
+        # "does Invited Expert participation have a fee?" was
+        # falsely rejected.
+        "invited expert",
+        "invited experts",
+        # Specific mailing-list types — questions about which lists
+        # are public vs member-only, or how AC lists work.
+        "ac mailing list",
+        "ac list",
+        "public-",
+        "member-",
+        "member-only document",
+        "member-only resource",
         # Group-lifecycle events. Round 34 audit found these were
         # all rejected as OUT-OF-SCOPE because the governance topic
         # didn't include them as keywords.
@@ -101,6 +137,14 @@ PROCESS_TOPICS = {
         "two implementations",
         "implementation report",
         "implementation experience",
+        "implementation evidence",
+        "adequate implementation",
+        # "Director" historically + present rare-role question
+        # ("does W3C still have a Director?"). The Director role
+        # was retired in the 2023 Process; questions about it
+        # remain legitimate Process governance.
+        "director",
+        "former director",
         "章程",
         "工作组",
         "主席",
@@ -165,6 +209,24 @@ FRIVOLOUS_PATTERNS = (
     "who founded w3c",
     "who founded the w3c",
     "w3c trivia",
+    # Round 35: defense-in-depth against the ``rec`` /
+    # ``spec`` substring problem. Even after pruning bare 2-letter
+    # keywords, harmless phrases like "recommend a restaurant" or
+    # "specific to my city" could still pass scope via other
+    # incidental matches. These literal phrases short-circuit the
+    # scope gate to OUT for the obvious non-W3C asks.
+    "italian restaurant", "chinese restaurant", "japanese restaurant",
+    "good restaurant", "best restaurant", "recommend a restaurant",
+    "what's the weather", "what is the weather", "weather in",
+    "what's the time", "what is the time",
+    "translate this", "translate to",
+    "write me a poem", "write a poem",
+    "write me a song", "write a song",
+    "summarize this article", "summarize this text",
+    "react framework", "best framework", "best library",
+    "best programming language", "vs code", "vscode",
+    # Recipe / cooking already covered by ``cooking recipe`` /
+    # ``cooking process recipe`` above.
 )
 
 

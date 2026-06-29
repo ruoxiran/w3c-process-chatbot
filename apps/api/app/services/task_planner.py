@@ -153,6 +153,10 @@ def _intent_type(text: str) -> str:
         "rescind", "rescinding", "rescinded",
         "obsolete recommendation", "supersede a recommendation",
         "obsolete a rec",
+        # Rollback / revoke a published REC — same operational
+        # category as rescind.
+        "rollback a recommendation", "rollback the recommendation",
+        "revoke a recommendation", "revoke the recommendation",
         "suspend a participant", "suspend participant",
         "participant suspension", "suspension of a participant",
         # Looser end-of-life phrasings — "after the group closes",
@@ -238,6 +242,16 @@ def _intent_type(text: str) -> str:
         ],
     )
     if has_transition_verb and has_stage_term:
+        return "advance_specification"
+    # Stage-shorthand + "next" / "next step" / "what's next" — without
+    # an explicit ``transition`` verb but clearly about advancing
+    # through stages. e.g. "from CR to REC, what's next?",
+    # "I'm at CR, what's the next milestone?". Distinct from the
+    # earlier branch which required the transition verb.
+    if has_stage_term and _has(text, [
+        "next", "next step", "what's next", "what is next",
+        "milestone", "下一步", "下一关",
+    ]):
         return "advance_specification"
     # Communications / announcement / press release / Call-for-Review
     # / AC review mechanics / mailing-list subscription. Goes BEFORE
@@ -386,8 +400,22 @@ def _intent_type(text: str) -> str:
             "publication",
             "publish",
             "implementation experience",
-            "cr",
-            "rec",
+            # Living-CR-REC / post-publication maintenance — adding
+            # features after CR, maintaining a published REC. These
+            # are advance-spec questions, not group-lifecycle, even
+            # though they happen post-publication.
+            "candidate additions", "candidate amendments",
+            "adding features after", "feature after",
+            "maintenance update", "rec maintenance",
+            "post-rec maintenance", "post-publication maintenance",
+            "existing recommendation", "published recommendation",
+            # Bare 2-letter "cr" / "rec" REMOVED in round 35 — they
+            # substring-match harmless words ("di-REC-tor" /
+            # "REC-ommend" / "REC-ipe", "con-CR-ete" / "se-CR-et").
+            # Real stage-transition questions are still caught
+            # earlier by the ``has_transition_verb`` +
+            # ``has_stage_term`` check, which uses specific phrases
+            # like "to rec" / "in cr" / "candidate recommendation".
             "推进",
             "下一步",
             "转换",

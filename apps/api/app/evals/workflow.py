@@ -13,7 +13,14 @@ def build_eval_workflow(settings: Settings) -> ChatWorkflow:
     should be fast and repeatable, so it supplies small fake live-context clients
     for the high-risk cases that require entity or charter grounding.
     """
-    eval_settings = settings.model_copy(update={"llm_provider": "template"})
+    # llm_router_enabled also forced off — otherwise the router
+    # fires whenever local Ollama happens to be running, making
+    # eval results depend on the developer's machine state.
+    # Deterministic eval = no LLM in the loop, anywhere.
+    eval_settings = settings.model_copy(update={
+        "llm_provider": "template",
+        "llm_router_enabled": False,
+    })
     w3c_api = EvalW3CAPIClient()
     github = EvalGitHubContextClient()
     compiled = CompiledContextStore(

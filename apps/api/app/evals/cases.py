@@ -647,6 +647,56 @@ EVAL_CASES = [
         tags=("tooling", "author-spec", "echidna", "intent-routing"),
     ),
     EvalCase(
+        name="italian-restaurant-rejected",
+        message="recommend a good Italian restaurant",
+        # Round 35 critical fix: the bare ``rec`` substring in the
+        # advance_specification catch-all AND in
+        # PROCESS_TOPICS.recommendation_track was matching
+        # ``REC-ommend`` and letting non-W3C queries pass the scope
+        # gate. Pin that scope correctly rejects.
+        expected_in_scope=False,
+        min_confidence=0.0,
+        tags=("scope", "rec-substring", "frivolous"),
+    ),
+    EvalCase(
+        name="weather-rejected",
+        message="what's the weather in Beijing?",
+        expected_in_scope=False,
+        min_confidence=0.0,
+        tags=("scope", "frivolous"),
+    ),
+    EvalCase(
+        name="director-role-in-scope",
+        message="what's the role of the Director?",
+        # The Director role was retired in 2023 Process, but
+        # questions about it (current state, history) are
+        # legitimate Process governance.
+        expected_in_scope=True,
+        min_confidence=0.55,
+        tags=("scope", "governance", "director"),
+    ),
+    EvalCase(
+        name="invited-expert-fee-in-scope",
+        message="does Invited Expert participation have a fee?",
+        # ``invited expert`` added to governance scope keywords in
+        # round 35; before that this fell through to OUT.
+        expected_in_scope=True,
+        min_confidence=0.55,
+        tags=("scope", "invited-expert"),
+    ),
+    EvalCase(
+        name="from-cr-to-rec-still-in-scope",
+        message="from CR to REC, what's next?",
+        # Regression test: removing bare ``cr``/``rec`` from scope
+        # MUST NOT break real stage-transition questions. The
+        # preposition-bounded forms (``from cr`` / ``to rec``) keep
+        # this in-scope.
+        expected_in_scope=True,
+        expected_intent="advance_specification",
+        min_confidence=0.55,
+        tags=("scope", "stage-shorthand", "regression"),
+    ),
+    EvalCase(
         name="tag-nomination-routes-to-elected-body",
         message="how do I nominate someone to the TAG?",
         expected_in_scope=True,
