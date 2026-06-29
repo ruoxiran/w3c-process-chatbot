@@ -53,9 +53,15 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
             notes="The actual form that asks the Director to evaluate a Recommendation-track transition.",
         ),
         ActionSurface(
-            label="Email the W3C Team about a transition",
+            label="Email the W3C Transitions Team",
             email="w3t-tr@w3.org",
-            notes="Internal Team list for transition-meeting scheduling and clarifying questions.",
+            notes=(
+                "INTERNAL list for transition-meeting scheduling and "
+                "clarifying questions about an in-flight transition "
+                "request. NOT for AC announcements / press releases / "
+                "publication notices — those go through w3t-comm@w3.org "
+                "under the communications_announcement intent."
+            ),
         ),
         ActionSurface(
             label="W3C Process — Recommendation Track",
@@ -266,6 +272,41 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
         ActionSurface(
             label="Process — Reviews and Review Responsibilities",
             url="https://www.w3.org/policies/process/#doc-reviews",
+        ),
+    ],
+    "communications_announcement": [
+        # The CORRECT mailing list. Round 31 fix: pre-existing
+        # advance_specification surface was bleeding ``w3t-tr@w3.org``
+        # into announcement answers because "publish/publication"
+        # words routed announcement questions to advance_specification.
+        # w3t-comm is the W3C Communications Team — handles Call for
+        # Review, press releases, AC announcements, public-review-
+        # announce posts. w3t-tr is the transitions list, totally
+        # different team.
+        ActionSurface(
+            label="Email the W3C Communications Team",
+            email="w3t-comm@w3.org",
+            notes="Canonical contact for any AC Call for Review, press release, blog post, or public publication announcement.",
+        ),
+        ActionSurface(
+            label="public-review-announce mailing list",
+            email="public-review-announce@w3.org",
+            notes="The public list the W3C uses to broadcast each new WD / CR / PR / REC publication. Default notice goes here automatically when the spec is published; subscribe to follow new W3C publications.",
+        ),
+        ActionSurface(
+            label="W3C Process — Publication and Communication (§7.1)",
+            url="https://www.w3.org/policies/process/#pub-com",
+            notes="Normative rule that the Team manages public communications about W3C publications.",
+        ),
+        ActionSurface(
+            label="Guidebook — Speaking about your work",
+            url="https://www.w3.org/guide/#speaking",
+            notes="Practical guidance on blog posts, press interviews, and amplifying a publication.",
+        ),
+        ActionSurface(
+            label="Guidebook — Charter Call for Review (Comms Team workflow)",
+            url="https://www.w3.org/guide/process/charter.html#cfr",
+            notes="Walks through the standard email-to-w3t-comm pattern for a Call for Review; the same pattern applies to other AC announcements.",
         ),
     ],
     "author_spec": [

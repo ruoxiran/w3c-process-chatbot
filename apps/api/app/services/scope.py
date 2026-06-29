@@ -68,6 +68,29 @@ PROCESS_TOPICS = {
     "guidebook": ["guidebook", "guide", "art of consensus", "指南"],
     "w3c": ["w3c", "万维网联盟"],
     "events": ["workshop", "workshops", "tpac", "ac meeting", "advisory committee meeting", "breakout", "研讨会"],
+    # Publication / Communications workflow. Without these, questions
+    # like "how to announce new publications?" get rejected by the
+    # keyword scope gate in template / no-router mode — the LLM
+    # router rescues them in production but the deterministic eval
+    # has no router fallback. These ARE legitimate Process topics
+    # (Process §7.1 covers Publication and Communication).
+    "communications": [
+        "publication",
+        "publish",
+        "publishing",
+        "announce",
+        "announcement",
+        "announcing",
+        "press release",
+        "communications team",
+        "w3t-comm",
+        "www-announce",
+        "call for review",
+        "cfr",
+        "公告",
+        "宣布",
+        "发布",
+    ],
 }
 
 # Patterns where the user mentions W3C but is clearly NOT asking about

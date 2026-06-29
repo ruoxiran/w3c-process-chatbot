@@ -643,6 +643,20 @@ EVAL_CASES = [
         tags=("tooling", "author-spec", "echidna", "intent-routing"),
     ),
     EvalCase(
+        name="announce-publication-uses-comm-team",
+        message="how to announce new publications?",
+        expected_in_scope=True,
+        # Pins round 31's fix. "Announce a publication" used to fall
+        # through to ``advance_specification`` (via the ``publication``
+        # keyword) and the model embedded ``w3t-tr@w3.org`` — the
+        # transitions list — as the contact. The correct list is
+        # ``w3t-comm@w3.org`` (the W3C Communications Team), now
+        # surfaced via the new ``communications_announcement`` intent.
+        expected_intent="communications_announcement",
+        min_confidence=0.55,
+        tags=("intent-routing", "communications", "comm-team"),
+    ),
+    EvalCase(
         name="process-guide-pair-wide-review",
         message="What does wide review require and how do I run one?",
         expected_in_scope=True,

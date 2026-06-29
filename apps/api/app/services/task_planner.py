@@ -95,6 +95,13 @@ _VALID_INTENT_TYPES = frozenset({
     # this intent surfaces the actual tools the editor uses to produce
     # and publish the document.
     "author_spec",
+    # Announcing publications / Call-for-Review / press releases.
+    # Maps to ``w3t-comm@w3.org`` and the public-review-announce /
+    # www-announce lists. Distinct from ``advance_specification`` —
+    # that's the technical transition step; this is the
+    # communications follow-up that goes through the W3C
+    # Communications Team, NOT ``w3t-tr@w3.org``.
+    "communications_announcement",
     "explain_process",
 })
 
@@ -147,6 +154,23 @@ def _intent_type(text: str) -> str:
     )
     if has_transition_verb and has_stage_term:
         return "advance_specification"
+    # Communications / announcement / press release / Call-for-Review.
+    # Goes BEFORE the broad "review" keyword check below because
+    # "Call for Review" otherwise matches via the bare ``review``
+    # substring and routes to plan_or_complete_review — which feeds
+    # the model the wrong action surface (``w3t-tr@w3.org`` instead
+    # of ``w3t-comm@w3.org``).
+    if _has(text, [
+        "announce", "announcement", "announcing",
+        "press release", "press contact",
+        "publicize", "publicise",
+        "communications team", "comm team", "w3c communications",
+        "w3t-comm", "www-announce", "public-review-announce",
+        "blog post", "blog about", "social media post",
+        "call for review", "cfr ",
+        "通讯团队", "公告", "宣布发布",
+    ]):
+        return "communications_announcement"
     if _has(text, ["wide review", "review", "审查"]):
         return "plan_or_complete_review"
     if _has(text, ["staff contact", "team contact", "liaison", "职责"]):
@@ -190,11 +214,17 @@ def _intent_type(text: str) -> str:
         # Repo / publication tooling
         "repo manager", "repo-manager",
         "auto-publication", "auto-publish", "automated publication",
-        # WBS / Call for Review tooling
-        "wbs", "call for review", "cfr ",
+        # WBS tooling — note: "call for review" is intentionally NOT
+        # here. CfR is a communications/announcement step that goes
+        # through w3t-comm@w3.org, not a spec-authoring tool. Moved
+        # to ``communications_announcement`` below.
+        "wbs",
         "编辑器", "撰写规范", "编写规范",
     ]):
         return "author_spec"
+    # ``communications_announcement`` is handled earlier (before the
+    # broad ``review`` keyword) so a "Call for Review" question gets
+    # the comms intent, not plan_or_complete_review.
     if _has(
         text,
         [
@@ -337,6 +367,20 @@ def _search_queries(
             "pubrules publication rules SOTD boilerplate conformance",
             "echidna automated publication working draft snapshot",
             f"{subject} editor draft publication tooling",
+        ])
+    elif intent_type == "communications_announcement":
+        # Announcement / press / Call-for-Review path. The canonical
+        # contact is ``w3t-comm@w3.org`` (NOT the transitions list
+        # ``w3t-tr@w3.org``). Retrieval seeds steer BM25 toward the
+        # Guidebook charter chapter (which has the most Comms-Team
+        # interaction text), the Process publication-and-communication
+        # section, and the "Speaking about your work" landing page.
+        seed.extend([
+            "W3C Communications Team w3t-comm@w3.org announce publication AC",
+            "Call for Review AC review announcement Comms Team",
+            "Guidebook Speaking about your work press blog announcement",
+            "Process publication communication dissemination press release",
+            "public-review-announce mailing list publication announcement",
         ])
     elif intent_type == "handle_objection_or_appeal":
         seed.extend(["Formal Objection appeal process", "Guidebook formal objection escalation"])
