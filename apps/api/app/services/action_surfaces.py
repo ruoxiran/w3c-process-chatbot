@@ -350,6 +350,70 @@ ACTION_SURFACES: dict[str, list[ActionSurface]] = {
             notes="How to set up the spec repository: w3c.json, branch protection, automated publication triggers.",
         ),
     ],
+    "attend_or_host_event": [
+        # TPAC / workshops / AC face-to-face events. Logistical
+        # surfaces — registration, breakout proposals, venue booking,
+        # hybrid-meeting tooling.
+        ActionSurface(
+            label="TPAC homepage (current year)",
+            url="https://www.w3.org/events/tpac/",
+            notes="The current TPAC event page. Registration, schedule, breakouts, group meeting times — all live here.",
+        ),
+        ActionSurface(
+            label="Guidebook — hosting a W3C meeting (logistics)",
+            url="https://www.w3.org/guide/meetings/hosting.html",
+            notes="Practical guide for venue booking, scheduling, attendance, hybrid-meeting setup.",
+        ),
+        ActionSurface(
+            label="Guidebook — W3C Workshops",
+            url="https://www.w3.org/guide/meetings/workshops.html",
+            notes="How to propose, organize, and run a W3C workshop. Includes the workshop charter template.",
+        ),
+        ActionSurface(
+            label="Guidebook — hybrid meetings",
+            url="https://www.w3.org/guide/meetings/hybrid-meeting.html",
+            notes="Equipment + facilitation guidance for mixed in-person + remote sessions.",
+        ),
+        ActionSurface(
+            label="Email the W3C Events / Operations Team",
+            email="w3t-events@w3.org",
+            notes="Internal Team list for event logistics. Use for TPAC venue / breakout / registration questions the public pages don't cover.",
+        ),
+        ActionSurface(
+            label="Process — General Meetings (§3.1.1)",
+            url="https://www.w3.org/policies/process/#GeneralMeetings",
+            notes="Normative requirements for meeting announcements, participation, and minutes.",
+        ),
+    ],
+    "w3c_membership": [
+        # Becoming / being a W3C member. Member benefits, dues,
+        # invited-expert status, member-only resources.
+        ActionSurface(
+            label="W3C Membership homepage",
+            url="https://www.w3.org/membership/",
+            notes="The public membership landing page. Member categories, fee schedule, application form link.",
+        ),
+        ActionSurface(
+            label="Members benefits + how to join",
+            url="https://www.w3.org/membership/",
+            notes="What W3C members get + the joining process. Note: detailed dues are member-only.",
+        ),
+        ActionSurface(
+            label="Process — Members (§2.1)",
+            url="https://www.w3.org/policies/process/#Members",
+            notes="Normative definition of W3C Member status, Member Agreement, and Member responsibilities.",
+        ),
+        ActionSurface(
+            label="Invited Expert participation",
+            url="https://www.w3.org/invited-experts/",
+            notes="Non-Member individuals can participate in a Working Group as Invited Experts — separate from Membership but a useful adjacent path.",
+        ),
+        ActionSurface(
+            label="Email W3C Membership for sales / dues questions",
+            email="membership@w3.org",
+            notes="Canonical contact for prospective members. Fee structure depends on org size + country tier — Team will guide.",
+        ),
+    ],
     "explain_process": [
         ActionSurface(
             label="W3C Process Document",

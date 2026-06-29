@@ -102,6 +102,15 @@ _VALID_INTENT_TYPES = frozenset({
     # communications follow-up that goes through the W3C
     # Communications Team, NOT ``w3t-tr@w3.org``.
     "communications_announcement",
+    # TPAC / workshops / AC meetings — attending or hosting a W3C
+    # event. The operational answers live in the
+    # /guide/meetings/ chapters (hosting, workshops, hybrid) and in
+    # Process §3.1.1 about General Meetings + §3.2 AC Meetings.
+    "attend_or_host_event",
+    # W3C membership — how to join, what members get, member-only
+    # vs public, member dues. Mostly maps to /guide/members and the
+    # Process §2.1 Members chapter.
+    "w3c_membership",
     "explain_process",
 })
 
@@ -115,7 +124,15 @@ def _intent_type(text: str) -> str:
     # otherwise override these correct keyword classifications.
     if _has(text, ["formal objection", "appeal", "异议", "申诉"]):
         return "handle_objection_or_appeal"
-    if _has(text, ["patent", "ipr", "exclusion opportunity", "专利"]):
+    if _has(text, [
+        "patent", "ipr", "exclusion opportunity", "专利",
+        # Employer / contribution / IPR commitment questions are
+        # Patent Policy territory — they're about the legal basis
+        # of contributing to a spec, not about authoring tools.
+        "employer veto", "employer approval", "veto my contribution",
+        "ipr commitment", "contribution license",
+        "non-participant commitment",
+    ]):
         return "check_patent_policy"
     if _has(text, ["tilt"]):
         return "charter_or_recharter"
@@ -192,6 +209,39 @@ def _intent_type(text: str) -> str:
         return "plan_or_complete_review"
     if _has(text, ["staff contact", "team contact", "liaison", "职责"]):
         return "coordinate_with_staff_contact"
+    # TPAC / workshops / AC face-to-face. Goes BEFORE the generic
+    # meeting / chair check so "how to host a workshop" doesn't get
+    # caught as a plain group-meeting question and lose its event-
+    # specific action surfaces (workshop chapter, TPAC homepage,
+    # breakout proposal form).
+    if _has(text, [
+        "tpac", "annual technical plenary", "annual meeting",
+        "workshop", "workshops", "research workshop",
+        "host an event", "host a meeting", "host a workshop",
+        "breakout", "breakouts", "breakout session",
+        "f2f", "face-to-face", "face to face meeting",
+        "register for tpac", "tpac registration",
+        "hybrid meeting", "hybrid event",
+        # AC plenary as an event (logistical). The procedural side
+        # — "how does the AC vote / decide" — is intercepted EARLIER
+        # by communications_announcement.
+        "advisory committee meeting", "ac meeting",
+        "研讨会", "线下会议", "面对面会议",
+    ]):
+        return "attend_or_host_event"
+    # W3C membership — join, dues, benefits, member-only access.
+    # Goes BEFORE meeting / chair to avoid "member representative
+    # meeting" collisions catching this as run_group_process.
+    if _has(text, [
+        "become a member", "become a w3c member", "join w3c",
+        "join the w3c", "w3c membership", "member dues",
+        "member fees", "member benefits", "members benefits",
+        "member-only", "member only", "membership agreement",
+        "how do i join", "what does w3c membership", "w3c funding",
+        "how is w3c funded", "w3c finance",
+        "成为成员", "会员", "会费",
+    ]):
+        return "w3c_membership"
     if _has(text, [
         "chair", "meeting", "agenda", "minutes", "会议", "主席",
         # Meeting tooling — IRC bots and the scribing toolchain are
@@ -235,6 +285,10 @@ def _intent_type(text: str) -> str:
         "add an editor", "add a new editor", "remove an editor",
         "new editor", "additional editor", "register as a spec editor",
         "register as an editor", "register an editor",
+        # SOTD content rules are an editor concern — the editor
+        # writes the SOTD section in the spec source.
+        "sotd", "status of this document", "sotd section",
+        "sotd boilerplate",
         # Repo / publication tooling
         "repo manager", "repo-manager",
         "auto-publication", "auto-publish", "automated publication",
@@ -405,6 +459,27 @@ def _search_queries(
             "Guidebook Speaking about your work press blog announcement",
             "Process publication communication dissemination press release",
             "public-review-announce mailing list publication announcement",
+        ])
+    elif intent_type == "attend_or_host_event":
+        # TPAC / workshops / AC face-to-face. Steer BM25 at the
+        # /guide/meetings/ chapters (hosting.html, workshops.html,
+        # hybrid-meeting.html) and Process §3.1.1 General Meetings
+        # + §3.2 AC Meetings.
+        seed.extend([
+            "Guidebook host workshop W3C event organize",
+            "TPAC annual technical plenary breakout schedule registration",
+            "Guidebook hosting face-to-face meeting venue logistics",
+            "Process General Meetings AC meeting Advisory Committee",
+            "hybrid meeting remote participation continuity",
+        ])
+    elif intent_type == "w3c_membership":
+        # Membership — Process §2.1 Members chapter and the
+        # /guide/ landing's membership-related sections.
+        seed.extend([
+            "W3C membership join member dues benefits agreement",
+            "Process Members Member Agreement Patent Policy commitment",
+            "Guidebook becoming a W3C member application",
+            "member-only access invited expert participation",
         ])
     elif intent_type == "handle_objection_or_appeal":
         seed.extend(["Formal Objection appeal process", "Guidebook formal objection escalation"])
