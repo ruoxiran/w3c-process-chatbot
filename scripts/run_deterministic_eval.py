@@ -115,8 +115,7 @@ def main() -> int:
             lines.append(f"<details><summary>{len(failed)} failing adversarial cases</summary>")
             lines.append("")
             for result in failed:
-                reasons = "; ".join(result.failures) or "no detail"
-                lines.append(f"- **{result.case_name}** — {reasons}")
+                lines.append(f"- **{result.name}** — {result.details or 'no detail'}")
             lines.append("</details>")
 
     summary = "\n".join(lines) + "\n"

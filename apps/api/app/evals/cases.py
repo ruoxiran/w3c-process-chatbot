@@ -687,6 +687,63 @@ EVAL_CASES = [
         tags=("intent-routing", "translation"),
     ),
     EvalCase(
+        # Round 37: Business-Group-vs-Community-Group mis-routed to
+        # ``transfer_incubation_to_wg`` because "Community Group" is in
+        # that intent's keyword list. Now caught earlier as a group-
+        # taxonomy question under ``run_group_process``.
+        name="business-group-vs-cg-routes-to-run-group-process",
+        message="what is a Business Group at W3C and how is it different from a Community Group?",
+        expected_in_scope=True,
+        expected_intent="run_group_process",
+        min_confidence=0.55,
+        tags=("intent-routing", "group-taxonomy"),
+    ),
+    EvalCase(
+        name="task-force-routes-to-run-group-process",
+        message="what is a Task Force inside a Working Group?",
+        expected_in_scope=True,
+        expected_intent="run_group_process",
+        min_confidence=0.55,
+        tags=("intent-routing", "task-force"),
+    ),
+    EvalCase(
+        name="wg-consensus-routes-to-run-group-process",
+        message="how does W3C define consensus in a Working Group?",
+        expected_in_scope=True,
+        expected_intent="run_group_process",
+        min_confidence=0.55,
+        tags=("intent-routing", "consensus"),
+    ),
+    EvalCase(
+        name="wg-voting-routes-to-run-group-process",
+        message="what happens if a Working Group cannot reach consensus, do you vote?",
+        expected_in_scope=True,
+        expected_intent="run_group_process",
+        min_confidence=0.55,
+        tags=("intent-routing", "voting"),
+    ),
+    EvalCase(
+        name="living-standard-routes-to-external-liaison",
+        message="does W3C produce Living Standards or only Recommendations?",
+        expected_in_scope=True,
+        expected_intent="external_liaison",
+        min_confidence=0.55,
+        tags=("intent-routing", "living-standard", "whatwg"),
+    ),
+    EvalCase(
+        # Round 37: "normative reference to IETF RFC" was falsely
+        # OUT-OF-SCOPE because no scope keyword matched. Added
+        # ``normative reference`` to the policy scope topic and
+        # ``ietf`` / ``rfc`` to a new external_orgs topic so the
+        # query stays in scope.
+        name="normref-to-rfc-routes-to-external-liaison",
+        message="how to reference an external IETF RFC as a normative reference?",
+        expected_in_scope=True,
+        expected_intent="external_liaison",
+        min_confidence=0.55,
+        tags=("intent-routing", "normative-reference", "ietf"),
+    ),
+    EvalCase(
         name="italian-restaurant-rejected",
         message="recommend a good Italian restaurant",
         # Round 35 critical fix: the bare ``rec`` substring in the

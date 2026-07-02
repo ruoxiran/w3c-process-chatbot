@@ -139,6 +139,26 @@ PROCESS_TOPICS = {
         "implementation experience",
         "implementation evidence",
         "adequate implementation",
+        # Sub-group structures inside a WG — Task Forces, plus the
+        # WG/IG/CG/BG taxonomy. Without these, comparison questions
+        # ("what's a Business Group vs a Community Group?", "what is
+        # a Task Force?") could fall through unless "Working Group"
+        # was also mentioned.
+        "business group",
+        " bg ",
+        "task force",
+        "task forces",
+        # Group decision mechanics — consensus + voting are core
+        # Process §3.4 topics. Use phrasal keywords (not bare
+        # ``consensus``) so unrelated "editor consensus" or
+        # "consensus estimate" phrases don't force scope in.
+        "wg vote",
+        "wg voting",
+        "voting in a wg",
+        "voting in a working group",
+        "working group vote",
+        "working group voting",
+        "art of consensus",
         # "Director" historically + present rare-role question
         # ("does W3C still have a Director?"). The Director role
         # was retired in the 2023 Process; questions about it
@@ -154,7 +174,41 @@ PROCESS_TOPICS = {
     ],
     "review": ["wide review", "horizontal review", "ac review", "transition", "review", "审查", "转换"],
     "objection": ["formal objection", "appeal", "异议", "申诉"],
-    "policy": ["patent", "ipr", "pubrules", "code of conduct", "专利", "发布规则"],
+    "policy": [
+        "patent",
+        "ipr",
+        "pubrules",
+        "code of conduct",
+        "专利",
+        "发布规则",
+        # Normative references to external (non-W3C) standards are
+        # a Process concern — REC requires that external normative
+        # references be appropriately stable. These keywords let
+        # questions like "how to reference an IETF RFC as a
+        # normative reference?" pass the scope gate.
+        "normative reference",
+        "normative references",
+        "external standard",
+        "external normative",
+    ],
+    # External-org coordination — WHATWG / IETF / ISO. Without these,
+    # liaison questions like "how to liaise with IETF on a normref?"
+    # got falsely rejected because none of the substantive keywords
+    # were in scope (only "process" / "w3c" would catch them, but the
+    # question often omits both).
+    "external_orgs": [
+        "whatwg",
+        "ietf",
+        "rfc",
+        " iso ",
+        "iso standard",
+        "ecma",
+        "ecmascript",
+        "ieee",
+        "living standard",
+        "living standards",
+        "html living standard",
+    ],
     "guidebook": ["guidebook", "guide", "art of consensus", "指南"],
     "w3c": ["w3c", "万维网联盟"],
     "events": ["workshop", "workshops", "tpac", "ac meeting", "advisory committee meeting", "breakout", "研讨会"],

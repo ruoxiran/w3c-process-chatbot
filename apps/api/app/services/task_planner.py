@@ -184,6 +184,11 @@ def _intent_type(text: str) -> str:
     # Staff-Contact question.
     if _has(text, [
         "whatwg", "html living standard", "html-living",
+        # Bare "living standard(s)" — questions like "does W3C
+        # produce Living Standards?" route here so the answer can
+        # contrast W3C's REC track with WHATWG's Living Standard
+        # via the MoU.
+        "living standard", "living standards",
         "ietf", "rfc", "ietf draft",
         " iso ", "iso standard", "joint w3c",
         "ecma", "ecma international", "ecmascript committee",
@@ -373,6 +378,40 @@ def _intent_type(text: str) -> str:
         "code of conduct", "coc ", "positive work environment",
         "antitrust", "competition policy", "cross-company",
         "行为准则", "反垄断",
+        # Sub-group structure inside a WG — Task Forces are a Process
+        # concept (a WG can create one to do focused work). Group
+        # taxonomy comparisons (BG vs CG vs WG vs IG) also belong here
+        # as definition/operations questions. Placed in run_group_process
+        # so the CG-keyword check below (transfer_incubation_to_wg)
+        # doesn't grab "Business Group vs Community Group" comparisons.
+        "task force", "task forces",
+        "business group", "business groups",
+        "kinds of group", "kinds of groups", "group types",
+        "types of group", "types of groups",
+        "what kind of group", "what type of group",
+        "wg vs ig", "ig vs cg", "cg vs wg", "bg vs cg",
+        # Group decision making — consensus + voting are Process §3.4
+        # mechanics. The Chair drives consensus and falls back to a
+        # vote when needed. These belong with the broader group-ops
+        # surfaces (Chair handbook, meeting guidance, Art of Consensus).
+        #
+        # Deliberately NOT using bare ``consensus`` alone — phrases
+        # like "editor consensus" (which is really a spec-authoring
+        # question) shouldn't get pulled into run_group_process. Use
+        # specific phrases that unambiguously reference the Process
+        # §3.4 decision mechanism.
+        "art of consensus",
+        "define consensus", "defines consensus",
+        "w3c consensus", "consensus in a wg",
+        "consensus in a working group",
+        "consensus definition", "definition of consensus",
+        "wg vote", "wg voting",
+        "working group vote", "working group voting",
+        "voting in a wg", "voting in a working group",
+        "cannot reach consensus", "can't reach consensus",
+        "fail to reach consensus", "reach consensus",
+        "group decision", "group decisions",
+        "决策", "投票",
     ]):
         return "run_group_process"
     if _has(text, ["community group", "incubation", "cg ", "转入 working group"]):
