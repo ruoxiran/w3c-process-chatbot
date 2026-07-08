@@ -18,6 +18,7 @@ from app.services.evidence import check_evidence_coverage
 from app.services.github_context import GitHubDraftContextClient, build_draft_context_augmented_query
 from app.services.llm_router import LLMRouter
 from app.services.bedrock import BedrockClient
+from app.services.bedrock_kb import BedrockKnowledgeBaseClient
 from app.services.ollama import OllamaClient
 from app.services.openai_compatible import OpenAICompatibleClient
 from app.services.process_state import extract_process_state
@@ -208,6 +209,7 @@ class ChatWorkflow:
         ollama_client: OllamaClient | None = None,
         openai_compatible_client: OpenAICompatibleClient | None = None,
         bedrock_client: BedrockClient | None = None,
+        bedrock_kb_client: BedrockKnowledgeBaseClient | None = None,
         w3c_api_client: W3CAPIClient | None = None,
         github_context_client: GitHubDraftContextClient | None = None,
         compiled_context_store: CompiledContextStore | None = None,
@@ -233,6 +235,19 @@ class ChatWorkflow:
             settings.bedrock_session_token,
             settings.bedrock_timeout_seconds,
         )
+        # Optional Bedrock Knowledge Base retriever. Only built when enabled and
+        # configured; None means the KB augmentation pass is skipped entirely.
+        self.bedrock_kb_client = bedrock_kb_client
+        if self.bedrock_kb_client is None and settings.bedrock_kb_enabled and settings.bedrock_kb_id:
+            self.bedrock_kb_client = BedrockKnowledgeBaseClient(
+                settings.bedrock_kb_id,
+                settings.bedrock_kb_region or settings.bedrock_region,
+                settings.bedrock_access_key_id,
+                settings.bedrock_secret_access_key,
+                settings.bedrock_session_token,
+                settings.bedrock_kb_max_results,
+                settings.bedrock_timeout_seconds,
+            )
         self.w3c_api_client = w3c_api_client or W3CAPIClient(settings)
         self.github_context_client = github_context_client or GitHubDraftContextClient(settings)
         self.llm_router = llm_router or LLMRouter(settings, self._resolve_llm_client())
@@ -811,6 +826,36 @@ class ChatWorkflow:
         # what the user actually asked instead of being biased by the 10+
         # lines of task-planner / entity / router metadata in retrieval_query.
         citations = self.retriever.retrieve(retrieval_query, user_message=request.message)
+
+        # Bedrock Knowledge Base augmentation — one query per request (on the
+        # raw user message, best for the KB's semantic search). KB passages are
+        # merged ahead of the corpus hits so they're favoured, then the whole
+        # pool is reranked and grounded exactly like corpus chunks. Failures are
+        # non-fatal: the corpus retrieval still stands.
+        if self.bedrock_kb_client is not None:
+            try:
+                kb_hits = self.bedrock_kb_client.retrieve(request.message)
+            except Exception as exc:  # pragma: no cover - external service fallback
+                kb_hits = []
+                logger.warning("Bedrock KB retrieval failed; continuing without it", exc_info=exc)
+                audit["bedrock_kb_error"] = type(exc).__name__
+                _degrade("bedrock_kb_failed")
+            if kb_hits:
+                audit["bedrock_kb_hits"] = len(kb_hits)
+                citations = _merge_citations(kb_hits, citations, limit=12)
+                _record(trace,
+                    WorkflowStep(
+                        id="bedrock_kb",
+                        label="Bedrock Knowledge Base retrieval",
+                        status="completed",
+                        detail=(
+                            f"Retrieved {len(kb_hits)} passage(s) from the configured Bedrock "
+                            "Knowledge Base and merged them with the local corpus for reranking."
+                        ),
+                        references=kb_hits,
+                    )
+                )
+
         if rewrite_variants:
             extra_hits: list[Citation] = []
             for variant in rewrite_variants:

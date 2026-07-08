@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     bedrock_secret_access_key: str | None = None
     bedrock_session_token: str | None = None
     bedrock_timeout_seconds: float = 120
+    # Bedrock Knowledge Base retrieval (bedrock-agent-runtime Retrieve). When
+    # enabled, KB passages augment the local-corpus retrieval — they join the
+    # candidate pool and are reranked/grounded like corpus chunks. Independent
+    # of the generation provider (needs the ``bedrock:Retrieve`` IAM action,
+    # not ``bedrock:InvokeModel``). Reuses the ``bedrock_*`` credentials;
+    # ``bedrock_kb_region`` falls back to ``bedrock_region`` when unset.
+    bedrock_kb_enabled: bool = False
+    bedrock_kb_id: str | None = None
+    bedrock_kb_region: str | None = None
+    bedrock_kb_max_results: int = 8
     ollama_base_url: str = "http://localhost:11434"
     ollama_timeout_seconds: float = 120
     llm_router_enabled: bool = True

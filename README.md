@@ -95,6 +95,29 @@ The Bedrock model id is `LLM_MODEL` (shared with Ollama). Two gotchas:
 The model only synthesizes language. Process and Guidebook citations
 and the evidence checks still gate what the answer can claim.
 
+### Bedrock Knowledge Base retrieval (optional)
+
+Separate from the generation provider above, you can pull passages from an AWS
+Bedrock Knowledge Base into retrieval. KB passages **augment** the local corpus
+— they join the candidate pool and are reranked, grounded, and cited exactly
+like corpus chunks (they don't replace the Process/Guidebook sources or the
+W3C API). This is how you get content that lives only in a managed KB (e.g. a
+patent-policy FAQ) into answers.
+
+```env
+BEDROCK_KB_ENABLED=true
+BEDROCK_KB_ID=XXXXXXXXXX
+BEDROCK_KB_REGION=us-east-1        # optional; defaults to BEDROCK_REGION
+BEDROCK_KB_MAX_RESULTS=8
+# reuses BEDROCK_ACCESS_KEY_ID / BEDROCK_SECRET_ACCESS_KEY
+```
+
+It's independent of the generation provider — you can run KB retrieval with any
+`LLM_PROVIDER` (Ollama, OpenAI-compatible, Bedrock). It uses a **different IAM
+action** (`bedrock:Retrieve` via `bedrock-agent-runtime`), so it can work even
+where `bedrock:InvokeModel` is blocked. KB retrieval failures are non-fatal —
+the local-corpus retrieval still stands.
+
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md). Short version:
