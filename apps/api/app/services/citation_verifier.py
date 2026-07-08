@@ -8,14 +8,13 @@ and the model picks the wrong one — the user sees an authoritative-
 looking citation that doesn't actually back the claim they care about.
 
 We do not re-run the model on a failed citation; that would burn another
-LLM call per question and the workflow already runs slow on Kimi. We
-just strip the failing ``[Sn]`` tag from the answer text and record the
-verification result in audit so the UI can surface a confidence hint.
-
-A claim with no surviving citation is left in the answer but is now
-visibly uncited — which is honest. The model's instructions already tell
-it to mark unsupported claims; verification just enforces that
-post-hoc.
+LLM call per question and the workflow already runs slow on Kimi.
+Out-of-range tags (``[S99]`` with 7 citations) are stripped — they point
+at nothing. In-range tags the LLM judge marks unsupported KEEP their
+source link but gain an inline ``*[unverified]*`` badge (rendered as a
+warning chip by the frontend): the judge is itself an LLM and can
+misfire, and deleting the tag would remove the user's only path to the
+source. The verification result lands in audit either way.
 """
 
 from __future__ import annotations
@@ -43,10 +42,12 @@ _CLAIM_SENTENCE_RE = re.compile(r"([^.!?\n]{8,}?\[S\d+\][^.!?\n]*?[.!?]?)", re.M
 @dataclass(frozen=True)
 class VerificationResult:
     answer: str
-    """Possibly-rewritten answer with unsupported [Sn] tags stripped."""
+    """Possibly-rewritten answer: out-of-range [Sn] tags stripped,
+    judge-flagged tags annotated with ``*[unverified]*``."""
 
     stripped_pairs: list[tuple[str, int]]
-    """``(claim_snippet, citation_index_1_based)`` pairs that were removed."""
+    """``(claim_snippet, citation_index_1_based)`` pairs that were
+    stripped (out-of-range) or flagged (judged unsupported)."""
 
     model: str | None = None
     """Model used for verification, if any."""
@@ -63,7 +64,7 @@ def verify_citations(
     client: JSONGenerator | None,
     model: str | None = None,
 ) -> VerificationResult:
-    """Strip ``[Sn]`` tags that aren't supported by their cited excerpts.
+    """Verify ``[Sn]`` tags against their cited excerpts.
 
     Two checks run in order:
       1. Free, no LLM call: strip ``[Sn]`` whose index is out of range
@@ -72,7 +73,8 @@ def verify_citations(
          can't be verified.
       2. LLM-based: for each in-range ``(claim, [Sn])`` pair, ask the
          verifier model whether the excerpt actually supports the claim;
-         strip the tags marked unsupported.
+         tags marked unsupported keep their link but gain an inline
+         ``*[unverified]*`` badge.
 
     Step 1 always runs (it needs no client). Step 2 is skipped when no
     client is provided.
@@ -128,10 +130,14 @@ def verify_citations(
             return VerificationResult(answer=new_answer, stripped_pairs=stripped, model=selected_model)
         return VerificationResult(answer=answer, stripped_pairs=[], model=selected_model)
 
-    # Strip the [Sn] tags marked unsupported. We strip ALL occurrences of
-    # the tag in the answer rather than just the one we evaluated — the
-    # same wrong citation often appears multiple times in compound answers,
-    # and the user would notice if half of them disappeared.
+    # Keep the [Sn] tags marked unsupported but flag them with the same
+    # ``*[unverified]*`` badge the claim verifier uses (the frontend renders
+    # it as a warning chip). Deleting the tag outright removed the user's
+    # only link to the source — worse for transparency than a flagged link,
+    # and the judge itself is an LLM that can misfire. All occurrences of
+    # the tag get the badge; the same citation often repeats in compound
+    # answers. Out-of-range tags above are still deleted: they point at
+    # nothing renderable.
     for index in unsupported:
         tag = f"[S{index}]"
         if tag in new_answer:
@@ -141,9 +147,8 @@ def verify_citations(
                 tag,
             )
             stripped.append((claim, index))
-            # Strip the tag and the space/punct that immediately precedes it
-            # (a dangling " ." after the strip looks ugly).
-            new_answer = re.sub(r"\s*" + re.escape(tag), "", new_answer)
+            new_answer = new_answer.replace(f"{tag} *[unverified]*", tag)
+            new_answer = new_answer.replace(tag, f"{tag} *[unverified]*")
     if not stripped:
         return VerificationResult(answer=answer, stripped_pairs=[], model=selected_model)
     return VerificationResult(answer=new_answer, stripped_pairs=stripped, model=selected_model)

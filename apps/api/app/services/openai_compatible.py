@@ -124,9 +124,13 @@ class OpenAICompatibleClient:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            # Bumped 600 → 1200 to match the new depth rule in the
-            # system prompt. See ollama.py for the rationale.
-            max_tokens=1200,
+            # Thinking models (Kimi k2.5, o-series style) spend reasoning
+            # tokens from the SAME budget before emitting any answer text;
+            # 1200 was exhausted mid-thought, returning an empty answer.
+            # The prompt's depth rules cap the visible answer length, so a
+            # larger ceiling doesn't produce longer answers on non-thinking
+            # models — it only leaves room for hidden reasoning.
+            max_tokens=4096,
         )
         return OpenAICompatibleGeneration(text=_clean_model_text(text), model=model)
 
@@ -186,39 +190,84 @@ class OpenAICompatibleClient:
             ],
             "temperature": 0.1,
             # Streaming path matches the sync path budget; the depth
-            # rule applies to BOTH paths.
-            "max_tokens": 1200,
+            # rule applies to BOTH paths. 4096 leaves room for thinking
+            # models whose reasoning tokens share this budget.
+            "max_tokens": 4096,
             "stream": True,
         }
-        with httpx.stream(
-            "POST",
-            f"{self.base_url}/chat/completions",
-            headers=self._headers(),
-            json=payload,
-            timeout=self.timeout_seconds,
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if not data or data == "[DONE]":
-                    if data == "[DONE]":
-                        break
-                    continue
-                try:
-                    obj = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                choices = obj.get("choices")
-                if not isinstance(choices, list) or not choices:
-                    continue
-                delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
-                if not isinstance(delta, dict):
-                    continue
-                content = delta.get("content")
-                if isinstance(content, str) and content:
-                    yield content
+        # Mirror ``_post_with_backoff`` for the streaming connection: retry
+        # transient statuses (429 rate-limit, 5xx) with exponential backoff
+        # before the first token. Once deltas have been yielded downstream
+        # there is no safe retry, but connection-time failures — the common
+        # case with per-minute rate limits — get the same resilience as the
+        # sync path.
+        url = f"{self.base_url}/chat/completions"
+        for attempt in range(_MAX_RETRIES + 1):
+            with httpx.stream(
+                "POST",
+                url,
+                headers=self._headers(),
+                json=payload,
+                timeout=self.timeout_seconds,
+            ) as response:
+                if _is_sampling_param_rejection(response, payload):
+                    # Some models pin sampling params (e.g. Kimi k2.5 only
+                    # accepts temperature=1). Drop ours and let the provider
+                    # default apply — grounding comes from the prompt and the
+                    # citation gates, not from a low temperature.
+                    body = response.read()
+                    logger.warning(
+                        "Upstream rejected sampling params on %s (%s); retrying without temperature",
+                        url, body[:300],
+                    )
+                    payload.pop("temperature", None)
+                    wait = 0.0
+                elif response.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
+                    body = response.read()
+                    retry_after = _parse_retry_after(response.headers.get("retry-after"))
+                    wait = retry_after if retry_after is not None else min(16.0, (2 ** attempt) + random.random())
+                    logger.warning(
+                        "Upstream returned %d on streaming %s (%s); sleeping %.2fs (attempt %d/%d)",
+                        response.status_code, url, body[:300], wait, attempt + 1, _MAX_RETRIES,
+                    )
+                else:
+                    if response.status_code >= 400:
+                        # Read the body before raising so the error log shows
+                        # WHY upstream refused (rate limit vs overload vs auth)
+                        # instead of a bare status code.
+                        body = response.read()
+                        logger.error(
+                            "Upstream returned %d on streaming %s: %s",
+                            response.status_code, url, body[:300],
+                        )
+                        response.raise_for_status()
+                    yield from self._iter_stream_deltas(response)
+                    return
+            time.sleep(wait)
+
+    @staticmethod
+    def _iter_stream_deltas(response: httpx.Response) -> Iterator[str]:
+        for line in response.iter_lines():
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if not data or data == "[DONE]":
+                if data == "[DONE]":
+                    break
+                continue
+            try:
+                obj = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            choices = obj.get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
+            if not isinstance(delta, dict):
+                continue
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                yield content
 
     def _chat(
         self,
@@ -243,6 +292,21 @@ class OpenAICompatibleClient:
             json=payload,
             timeout=self.timeout_seconds,
         )
+        if _is_sampling_param_rejection(response, payload):
+            # Same contract as the streaming path: models that pin sampling
+            # params (Kimi k2.5: temperature must be 1) get one retry with
+            # our temperature removed so the provider default applies.
+            logger.warning(
+                "Upstream rejected sampling params (%s); retrying without temperature",
+                response.content[:300],
+            )
+            payload.pop("temperature", None)
+            response = self._post_with_backoff(
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=payload,
+                timeout=self.timeout_seconds,
+            )
         response.raise_for_status()
         data = response.json()
         choices = data.get("choices")
@@ -287,6 +351,24 @@ class OpenAICompatibleClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
+
+
+def _is_sampling_param_rejection(response: httpx.Response, payload: dict[str, object]) -> bool:
+    """True when upstream rejected the request because of our ``temperature``.
+
+    Some models pin sampling parameters (Kimi k2.5 returns
+    ``400 invalid temperature: only 1 is allowed for this model``). Detected
+    by a 400 status whose body mentions "temperature" while our payload still
+    carries one — after the caller strips it, this can't match again, so the
+    retry is naturally bounded to one attempt.
+    """
+    if response.status_code != 400 or "temperature" not in payload:
+        return False
+    try:
+        body = response.read()
+    except Exception:  # pragma: no cover - closed/consumed stream edge
+        return False
+    return b"temperature" in body.lower()
 
 
 _RETRY_AFTER_MAX_SECONDS = 60.0

@@ -4,8 +4,19 @@ from app.models.schemas import Citation, CompiledContext, DraftContext, NextStep
 TopicAnswer = tuple[str, list[str]]
 
 
-def build_refusal(locale: str = "auto") -> str:
+def _wants_english(locale: str, message: str) -> bool:
+    """Resolve the answer language. Explicit locales win; ``auto`` (the API
+    default) detects from the message — a message with no CJK characters gets
+    the English templates, not the Chinese ones."""
     if locale.startswith("en"):
+        return True
+    if locale.startswith("zh"):
+        return False
+    return not any("一" <= ch <= "鿿" for ch in message)
+
+
+def build_refusal(locale: str = "auto", message: str = "") -> str:
+    if _wants_english(locale, message):
         return (
             "This assistant only answers questions about the W3C Process, the W3C Guidebook, "
             "and W3C standards workflow. Please rephrase your question around those topics."
@@ -25,7 +36,7 @@ def build_grounded_answer(
     guide_link = _preferred_guide_link(topic, citations)
     draft_contexts = draft_contexts or []
 
-    if locale.startswith("en"):
+    if _wants_english(locale, message):
         answer, default_steps = _english_topic_answer(topic, process_link, guide_link)
         answer, default_steps = _apply_compiled_context(answer, default_steps, compiled_context, english=True)
         if topic == "charter":
@@ -111,7 +122,7 @@ def _contextual_next_steps(
 ) -> list[str]:
     context = _context_text(message, citations)
     query = message.lower()
-    english = locale.startswith("en")
+    english = _wants_english(locale, message)
     query_mentions_charter = _has_any(query, ["charter", "recharter", "章程"])
     query_mentions_transition = _has_any(
         query,

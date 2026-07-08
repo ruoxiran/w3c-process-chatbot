@@ -415,7 +415,7 @@ class ChatWorkflow:
             )
 
         if not classification.in_scope:
-            answer = build_refusal(request.locale)
+            answer = build_refusal(request.locale, request.message)
             ctx.trace.extend([
                 WorkflowStep(
                     id="retriever",
@@ -1196,7 +1196,14 @@ class ChatWorkflow:
             except Exception as exc:
                 model_generation = "template_fallback"
                 audit["model_generation"] = model_generation
-                audit["model_error"] = type(exc).__name__
+                model_error = type(exc).__name__
+                # Surface the upstream status code (429 rate-limit vs 5xx
+                # outage vs 401 auth) in the audit blob — a bare exception
+                # class name is not enough to diagnose provider failures.
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code is not None:
+                    model_error = f"{model_error}:{status_code}"
+                audit["model_error"] = model_error
                 ctx.degrade("llm_generation_failed")
                 logger.warning(
                     "Answer generation via %s failed; using template fallback",
@@ -1294,7 +1301,7 @@ class ChatWorkflow:
                 answer = verification.answer
                 ctx.audit["citation_verifier"] = {
                     "model": verification.model,
-                    "stripped_count": len(verification.stripped_pairs),
+                    "flagged_count": len(verification.stripped_pairs),
                 }
                 ctx.record(
                     WorkflowStep(
@@ -1302,8 +1309,9 @@ class ChatWorkflow:
                         label="Citation verifier",
                         status="completed",
                         detail=(
-                            f"Stripped {len(verification.stripped_pairs)} citation tag(s) the verifier judged unsupported "
-                            "by their excerpts. The claim text is preserved; only the misleading attribution is removed."
+                            f"Flagged {len(verification.stripped_pairs)} citation tag(s) the verifier judged unsupported "
+                            "by their excerpts. Flagged tags keep their source link but carry an inline [unverified] "
+                            "marker; tags pointing at nonexistent sources are removed."
                         ),
                     )
                 )
