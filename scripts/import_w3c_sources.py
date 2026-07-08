@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,6 +73,39 @@ WEB_SOURCES = [
         "url": "https://www.w3.org/TR/security-privacy-questionnaire/",
         "source_type": "guide",
         "repo_name": "security-privacy-questionnaire",
+    },
+    # The /policies/ landing page indexes every W3C normative policy
+    # (code of conduct, privacy, email, logos, external contributions,
+    # conflict of interest, ...). Crawl it two levels deep so the model
+    # can cite the actual policy text, not just the Process Document's
+    # references to it. Tagged ``process`` to match the sibling policy
+    # pages already ingested above — these are normative W3C policies,
+    # not practice guidance.
+    #
+    # ``exclude_prefixes`` skips the policy pages that already have
+    # their own dedicated source entry (Process Document, Patent Policy,
+    # Code of Conduct, Antitrust). Re-crawling them here would duplicate
+    # their chunks under repo_name ``policies`` — worst of all the giant
+    # single-page Process Document. The crawl stays scoped under
+    # ``/policies/`` via ``is_crawlable_internal_url`` regardless.
+    {
+        "name": "W3C Policies",
+        "url": "https://www.w3.org/policies/",
+        "source_type": "process",
+        "repo_name": "policies",
+        "max_depth": 2,
+        "max_pages": 120,
+        "fetch_delay": 1.0,
+        # No trailing slashes: ``canonical_url`` strips them, so the URLs
+        # this is matched against look like ``/policies/patent-policy``.
+        # ``/policies/antitrust`` (no suffix) intentionally also matches
+        # the versioned ``/policies/antitrust-2024`` the landing links to.
+        "exclude_prefixes": [
+            "/policies/process",
+            "/policies/patent-policy",
+            "/policies/code-of-conduct",
+            "/policies/antitrust",
+        ],
     },
     # WAI standards landing was tried and reverted in round 27:
     # ``/WAI/standards-guidelines/`` fans out into ACT (~14k chunks),
@@ -168,11 +202,18 @@ def main() -> None:
 
     for source in WEB_SOURCES:
         info = repo_info.get(source["repo_name"], {})
+        # A source may pin its own crawl depth / page cap; otherwise fall
+        # back to the guide defaults for ``guide`` sources and single-page
+        # for everything else.
+        default_depth = args.guide_depth if source["source_type"] == "guide" else 0
+        default_pages = args.guide_max_pages if source["source_type"] == "guide" else 1
         web_pages = crawl_web_source(
             source=source,
             sources_dir=args.sources_dir,
-            max_depth=args.guide_depth if source["source_type"] == "guide" else 0,
-            max_pages=args.guide_max_pages if source["source_type"] == "guide" else 1,
+            max_depth=source.get("max_depth", default_depth),
+            max_pages=source.get("max_pages", default_pages),
+            exclude_prefixes=source.get("exclude_prefixes"),
+            fetch_delay=source.get("fetch_delay", 0.0),
         )
         for page in web_pages:
             chunks.extend(
@@ -238,11 +279,28 @@ def git_output(path: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
 
 
-def fetch(url: str) -> str:
-    with httpx.Client(timeout=30, follow_redirects=True) as client:
-        response = client.get(url)
-        response.raise_for_status()
-        return response.text
+def fetch(url: str, *, retries: int = 5) -> str:
+    """GET a URL, retrying transient TLS/connection failures.
+
+    www.w3.org intermittently drops connections mid-handshake under rapid
+    sequential requests (``EOF occurred in violation of protocol``). A
+    fresh client + short backoff per attempt clears it; genuine HTTP
+    errors (4xx/5xx) still raise immediately without wasting retries.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            with httpx.Client(timeout=30, follow_redirects=True) as client:
+                response = client.get(url)
+                response.raise_for_status()
+                return response.text
+        except httpx.HTTPStatusError:
+            raise
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+    raise last_exc if last_exc else httpx.HTTPError(f"failed to fetch {url}")
 
 
 def crawl_web_source(
@@ -251,12 +309,16 @@ def crawl_web_source(
     sources_dir: Path,
     max_depth: int,
     max_pages: int,
+    exclude_prefixes: list[str] | None = None,
+    fetch_delay: float = 0.0,
 ) -> list[dict[str, str | int | None]]:
     """Fetch a web source and same-guide internal links up to max_depth.
 
     The crawl is intentionally narrow: it follows only HTML-like links under the
     original source path, so Guidebook expansion cannot wander into arbitrary
-    W3C pages or user-provided URLs.
+    W3C pages or user-provided URLs. ``exclude_prefixes`` further drops any URL
+    whose path starts with one of the given prefixes (used to skip policy pages
+    that already have their own dedicated source entry).
     """
     queue: list[tuple[str, int, str | None]] = [(canonical_url(source["url"]), 0, None)]
     visited: set[str] = set()
@@ -267,6 +329,12 @@ def crawl_web_source(
         if url in visited or depth > max_depth:
             continue
         visited.add(url)
+
+        # Politeness delay between page fetches. Defaults to 0 (Guidebook
+        # crawl unaffected); the /policies/ source sets it >0 because
+        # www.w3.org throttles rapid sequential TLS handshakes.
+        if fetch_delay and len(visited) > 1:
+            time.sleep(fetch_delay)
 
         try:
             html = fetch(url)
@@ -291,21 +359,29 @@ def crawl_web_source(
         if depth >= max_depth:
             continue
 
-        for link in discover_internal_links(html, base_url=url, root_url=source["url"]):
+        for link in discover_internal_links(
+            html, base_url=url, root_url=source["url"], exclude_prefixes=exclude_prefixes
+        ):
             if link not in visited and all(queued[0] != link for queued in queue):
                 queue.append((link, depth + 1, url))
 
     return pages
 
 
-def discover_internal_links(html: str, *, base_url: str, root_url: str) -> list[str]:
+def discover_internal_links(
+    html: str,
+    *,
+    base_url: str,
+    root_url: str,
+    exclude_prefixes: list[str] | None = None,
+) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
     links: list[str] = []
     seen: set[str] = set()
     for anchor in soup.find_all("a", href=True):
         href = str(anchor.get("href") or "").strip()
         url = canonical_url(urljoin(base_url, href))
-        if not is_crawlable_internal_url(url, root_url):
+        if not is_crawlable_internal_url(url, root_url, exclude_prefixes):
             continue
         if url in seen:
             continue
@@ -314,7 +390,9 @@ def discover_internal_links(html: str, *, base_url: str, root_url: str) -> list[
     return links
 
 
-def is_crawlable_internal_url(url: str, root_url: str) -> bool:
+def is_crawlable_internal_url(
+    url: str, root_url: str, exclude_prefixes: list[str] | None = None
+) -> bool:
     parsed = urlparse(url)
     root = urlparse(root_url)
     if parsed.scheme not in {"http", "https"}:
@@ -323,6 +401,8 @@ def is_crawlable_internal_url(url: str, root_url: str) -> bool:
         return False
     root_path = root.path if root.path.endswith("/") else f"{root.path}/"
     if not parsed.path.startswith(root_path):
+        return False
+    if exclude_prefixes and any(parsed.path.startswith(prefix) for prefix in exclude_prefixes):
         return False
     if "," in parsed.path or "@@" in parsed.path:
         return False
@@ -335,7 +415,7 @@ def canonical_url(url: str) -> str:
     clean_url, _fragment = urldefrag(url)
     parsed = urlparse(clean_url)
     path = re.sub(r"/index\.html?$", "/", parsed.path)
-    if path not in {"/", "/guide/", "/policies/process/"} and path.endswith("/"):
+    if path not in {"/", "/guide/", "/policies/", "/policies/process/"} and path.endswith("/"):
         path = path.rstrip("/")
     return parsed._replace(path=path, query="", fragment="").geturl()
 
