@@ -373,6 +373,15 @@ export async function sendChatStream(
         } else if (parsed.event === "error") {
           errorMessage = (parsed.data as { message?: string }).message ?? "stream error";
         } else if (parsed.event === "done") {
+          // ``done.answer`` is authoritative: it carries the post-processed
+          // final text, and it is the ONLY place the answer appears when the
+          // LLM stream failed and the backend fell back to the template
+          // answer (zero deltas arrive in that case).
+          const finalAnswer = (parsed.data as { answer?: string }).answer ?? "";
+          if (finalAnswer && finalAnswer !== accumulated) {
+            accumulated = finalAnswer;
+            callbacks.onChunk(accumulated, "");
+          }
           buffer = "";
           boundary = -1;
           continue;

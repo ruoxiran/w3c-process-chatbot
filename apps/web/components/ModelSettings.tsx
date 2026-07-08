@@ -82,7 +82,7 @@ export function describeConfig(config: SavedConfig): string {
     }
     return `${host} · ${config.model}`;
   }
-  return `Ollama · ${config.model}`;
+  return `Local (Ollama) · ${config.model}`;
 }
 
 interface ModelSettingsProps {
@@ -211,10 +211,10 @@ export function ModelSettings({ open, current, onClose, onSave }: ModelSettingsP
               onChange={() => setChoice("openai-compatible")}
             />
             <span>
-              <strong>OpenAI-compatible</strong>
+              <strong>Any model API</strong>
               <small>
-                Works with OpenAI, OpenRouter, Kimi, Groq, vLLM and other endpoints
-                that implement <code>/v1/chat/completions</code>.
+                Connect any large-model provider — OpenAI, OpenRouter, Kimi, Groq,
+                vLLM and other endpoints that implement <code>/v1/chat/completions</code>.
               </small>
             </span>
           </label>
@@ -228,10 +228,11 @@ export function ModelSettings({ open, current, onClose, onSave }: ModelSettingsP
               onChange={() => setChoice("ollama")}
             />
             <span>
-              <strong>Ollama</strong>
+              <strong>Local model (Ollama)</strong>
               <small>
-                Local model via Ollama. The endpoint must be reachable from the
-                W3C server — your laptop's <code>localhost</code> usually is not.
+                Connect your own locally hosted model through an Ollama endpoint.
+                The endpoint must be reachable from the W3C server — your
+                laptop's <code>localhost</code> usually is not.
               </small>
             </span>
           </label>
