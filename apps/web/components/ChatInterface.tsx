@@ -1022,6 +1022,11 @@ function ResponseDetails({ response }: { response: ChatResponse }) {
       <div className={`callout ${response.in_scope ? "success" : "warning"}`}>
         {response.in_scope ? "In scope: W3C Process workflow question" : "Out of scope"}
       </div>
+      {response.notice ? (
+        <div className="callout warning" role="status">
+          ⚠️ {response.notice}
+        </div>
+      ) : null}
       {/* The ``Process state`` summary panel (workflow / intent / stage /
           group / deliverable + risk-flag chips) used to render here, but
           its extraction was wrong more often than right for non-
@@ -1039,6 +1044,10 @@ function ResponseDetails({ response }: { response: ChatResponse }) {
 function toChatHistory(messages: ConversationMessage[]): ChatTurn[] {
   return messages
     .filter((item) => !item.status)
+    // Drop empty-content turns: the server's ChatTurn requires a non-empty
+    // body, so an empty assistant bubble (e.g. a degraded turn) would 422
+    // the whole next request.
+    .filter((item) => item.content.trim().length > 0)
     .map((item) => ({
       role: item.role,
       content: item.content

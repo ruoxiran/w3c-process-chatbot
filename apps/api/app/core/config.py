@@ -8,6 +8,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Provider id values the workflow can resolve to a concrete LLM client.
 #   - ``ollama`` and the ``openai-compatible`` cluster (``openai`` /
 #     ``openai-compatible`` / ``openrouter``) route to a real LLM
+#   - ``bedrock`` routes to AWS Bedrock via the boto3 ``bedrock-runtime``
+#     Converse API (model-agnostic: Claude / Nova / Llama / Titan / ...)
 #   - ``template`` uses the deterministic offline answer-builder; eval
 #     fixtures and unit tests pin this so they don't hit the network
 LLMProviderId = Literal[
@@ -15,6 +17,7 @@ LLMProviderId = Literal[
     "openai",
     "openai-compatible",
     "openrouter",
+    "bedrock",
     "template",
 ]
 
@@ -32,6 +35,17 @@ class Settings(BaseSettings):
     openai_compatible_api_key: str | None = None
     openai_compatible_model: str = "gpt-4.1"
     openai_compatible_timeout_seconds: float = 120
+    # AWS Bedrock (boto3 bedrock-runtime Converse API). Credentials are supplied
+    # explicitly via env; the ambient AWS credential chain is not consulted.
+    # The model id is shared with Ollama via ``llm_model`` (both are the
+    # "active provider" model). On Bedrock set ``LLM_MODEL`` to a cross-region
+    # inference profile, e.g. ``us.anthropic.claude-sonnet-5`` — bare on-demand
+    # ids are being retired.
+    bedrock_region: str = "us-east-1"
+    bedrock_access_key_id: str | None = None
+    bedrock_secret_access_key: str | None = None
+    bedrock_session_token: str | None = None
+    bedrock_timeout_seconds: float = 120
     ollama_base_url: str = "http://localhost:11434"
     ollama_timeout_seconds: float = 120
     llm_router_enabled: bool = True

@@ -372,6 +372,13 @@ def models() -> ModelsResponse:
                 ],
                 error=type(exc).__name__,
             )
+    if settings.llm_provider == "bedrock":
+        # Enumerating Bedrock foundation models needs the control-plane client;
+        # the configured model (shared llm_model) is what the UI displays.
+        return ModelsResponse(
+            default_model=settings.llm_model,
+            models=[ModelInfo(name=settings.llm_model, provider="bedrock")],
+        )
     return ModelsResponse(default_model=settings.llm_model, models=[])
 
 

@@ -23,7 +23,8 @@ scripts/      Ingestion, embeddings cache, evaluation utilities
 
 ```bash
 cp .env.example .env
-python3 -m venv .venv && source .venv/bin/activate
+# Python 3.11–3.13 required (3.14 not yet supported by pinned numpy/torch)
+python3.13 -m venv .venv && source .venv/bin/activate
 pip install -r apps/api/requirements.txt
 uvicorn app.main:app --reload --app-dir apps/api
 ```
@@ -50,6 +51,7 @@ returns grounded fallback answers and scope refusals. Wire up a provider via
 | `openai-compatible`| Any OpenAI-shaped `/v1/chat/completions` endpoint        |
 | `openai`           | OpenAI                                                   |
 | `openrouter`       | OpenRouter                                               |
+| `bedrock`          | AWS Bedrock via the boto3 Converse API (`LLM_MODEL`)     |
 | `template`         | No LLM, deterministic template only                      |
 
 For an OpenAI-compatible provider:
@@ -60,6 +62,35 @@ OPENAI_COMPATIBLE_BASE_URL=https://api.openai.com/v1
 OPENAI_COMPATIBLE_API_KEY=...
 OPENAI_COMPATIBLE_MODEL=gpt-4.1
 ```
+
+For AWS Bedrock (model-agnostic — Claude, Nova, Llama, Titan — via the
+`bedrock-runtime` Converse API):
+
+```env
+LLM_PROVIDER=bedrock
+LLM_MODEL=us.anthropic.claude-sonnet-5
+BEDROCK_REGION=us-east-1
+BEDROCK_ACCESS_KEY_ID=...
+BEDROCK_SECRET_ACCESS_KEY=...
+# BEDROCK_SESSION_TOKEN=   # only for temporary STS credentials
+```
+
+The Bedrock model id is `LLM_MODEL` (shared with Ollama). Two gotchas:
+
+- **Use an inference profile, not a bare model id.** Current Claude models on
+  Bedrock are only reachable through cross-region *inference profiles* — the
+  `us.` / `global.` prefix (e.g. `us.anthropic.claude-sonnet-5`). Bare
+  on-demand ids like `anthropic.claude-3-5-sonnet-20241022-v2:0` are being
+  retired and return `ResourceNotFoundException`. List what your account/region
+  allows with `aws bedrock list-inference-profiles`.
+- **Credentials need invoke permission, and watch for org SCPs.** The IAM
+  principal must allow `bedrock:InvokeModel` and
+  `bedrock:InvokeModelWithResponseStream`. An **explicit deny in an AWS
+  Organizations Service Control Policy** overrides any IAM grant and blocks all
+  invocation — that must be lifted by an org admin, and it must permit every
+  region a cross-region profile can route to (a `us.` profile can hit
+  `us-east-1`/`us-east-2`/`us-west-2`). Credentials are read only from the
+  `BEDROCK_*` env vars, not the ambient AWS credential chain.
 
 The model only synthesizes language. Process and Guidebook citations
 and the evidence checks still gate what the answer can claim.
