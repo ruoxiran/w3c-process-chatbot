@@ -60,7 +60,12 @@ def test_workflow_audit_includes_degraded_field_empty_on_healthy_run() -> None:
     assert isinstance(response.audit["degraded"], list)
     # Template mode never calls external services, so degradation tags
     # like w3c_api_unavailable / llm_generation_failed should not appear.
-    assert response.audit["degraded"] == []
+    # The cross-encoder reranker is an OPTIONAL local dependency (CI runs
+    # without torch, and the model may not be downloaded); its
+    # "cross_encoder_unavailable" tag is expected and benign, so exclude it.
+    # What must NOT appear are external-service / generation degradations.
+    unexpected = [d for d in response.audit["degraded"] if d != "cross_encoder_unavailable"]
+    assert unexpected == []
 
 
 def test_workflow_returns_topic_specific_answers() -> None:
