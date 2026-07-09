@@ -234,6 +234,7 @@ class ChatWorkflow:
             settings.bedrock_secret_access_key,
             settings.bedrock_session_token,
             settings.bedrock_timeout_seconds,
+            settings.bedrock_max_tokens,
         )
         # Optional Bedrock Knowledge Base retriever. Only built when enabled and
         # configured; None means the KB augmentation pass is skipped entirely.

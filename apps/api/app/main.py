@@ -46,6 +46,7 @@ from app.core.logging_setup import (
     set_request_id,
     setup_logging,
 )
+from app.services.bedrock import bedrock_model_infos
 from app.services.ollama import OllamaClient
 from app.services.openai_compatible import OpenAICompatibleClient
 from app.workflows.chat_workflow import ChatWorkflow, is_openai_compatible_provider
@@ -373,12 +374,13 @@ def models() -> ModelsResponse:
                 error=type(exc).__name__,
             )
     if settings.llm_provider == "bedrock":
-        # Enumerating Bedrock foundation models needs the control-plane client;
-        # the configured model (shared llm_model) is what the UI displays.
-        return ModelsResponse(
-            default_model=settings.llm_model,
-            models=[ModelInfo(name=settings.llm_model, provider="bedrock")],
-        )
+        # Curated Bedrock catalogue for the UI dropdown. Ensure the configured
+        # default (LLM_MODEL) is always an option, even if it's not in the list
+        # (e.g. an inference-profile id), so the dropdown's selection is valid.
+        models = bedrock_model_infos()
+        if all(model.name != settings.llm_model for model in models):
+            models.insert(0, ModelInfo(name=settings.llm_model, provider="bedrock"))
+        return ModelsResponse(default_model=settings.llm_model, models=models)
     return ModelsResponse(default_model=settings.llm_model, models=[])
 
 

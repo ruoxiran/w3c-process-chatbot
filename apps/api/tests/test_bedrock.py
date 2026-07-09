@@ -18,7 +18,7 @@ import pytest
 
 from app.core.config import Settings
 from app.models.schemas import ChatRequest
-from app.services.bedrock import BedrockClient, BedrockGeneration
+from app.services.bedrock import BEDROCK_MODEL_IDS, BedrockClient, BedrockGeneration, bedrock_model_infos
 from app.workflows.chat_workflow import ChatWorkflow
 
 
@@ -113,8 +113,33 @@ def test_stream_answer_yields_content_deltas() -> None:
 
 
 def test_list_models_is_empty() -> None:
-    # /models reads settings.llm_model directly; this stays empty.
+    # The runtime client can't enumerate; /models uses bedrock_model_infos().
     assert BedrockClient("us-east-1").list_models() == []
+
+
+_ALLOWED_BEDROCK_PROVIDERS = {"amazon", "anthropic", "qwen", "deepseek", "openai"}
+
+
+def test_bedrock_model_catalogue() -> None:
+    infos = bedrock_model_infos()
+    assert len(infos) == len(BEDROCK_MODEL_IDS)
+    assert all(info.provider == "bedrock" for info in infos)
+    # No embeddings/non-chat models in the curated list.
+    assert not any(info.is_embedding for info in infos)
+    # Limited to the five allowed model providers.
+    assert {name.split(".", 1)[0] for name in BEDROCK_MODEL_IDS} == _ALLOWED_BEDROCK_PROVIDERS
+    # The recommended default is present; excluded families/modalities are not.
+    assert "anthropic.claude-sonnet-5" in BEDROCK_MODEL_IDS
+    for excluded in (
+        "amazon.nova-canvas-v1:0",       # image
+        "amazon.nova-reel-v1:0",         # video
+        "amazon.titan-embed-text-v1",    # embeddings
+        "amazon.rerank-v1:0",            # rerank
+        "qwen.qwen3-coder-next",         # coding-specialised
+        "google.gemma-4-31b",            # provider not allowed
+        "meta.llama4-scout-17b-instruct-v1:0",  # provider not allowed
+    ):
+        assert excluded not in BEDROCK_MODEL_IDS
 
 
 class _TemperatureRejectingRuntime:
@@ -144,6 +169,23 @@ def test_generate_answer_retries_without_temperature() -> None:
     # First attempt carried temperature, retry dropped it.
     assert "temperature" in runtime.attempts[0]
     assert "temperature" not in runtime.attempts[1]
+
+    # The rejection is cached: a second call skips temperature entirely (one
+    # request, not two).
+    runtime.attempts.clear()
+    client.generate_answer(**_answer_kwargs())
+    assert len(runtime.attempts) == 1
+    assert "temperature" not in runtime.attempts[0]
+
+
+def test_generate_answer_uses_configured_budget() -> None:
+    runtime = _FakeRuntime(converse_text="ok")
+    client = _client_with_runtime(runtime)
+    client.max_answer_tokens = 4096
+
+    client.generate_answer(**_answer_kwargs())
+
+    assert runtime.converse_calls[0]["inferenceConfig"]["maxTokens"] == 4096
 
 
 def test_non_sampling_error_is_not_swallowed() -> None:

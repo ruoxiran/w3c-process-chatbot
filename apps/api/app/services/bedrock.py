@@ -10,6 +10,7 @@ from app.models.schemas import (
     CompiledContext,
     DraftContext,
     EvidenceCoverage,
+    ModelInfo,
     ProcessState,
     TaskPlan,
     W3CEntity,
@@ -20,10 +21,46 @@ from app.services.ollama import _clean_model_text, _extract_json_object, build_p
 logger = logging.getLogger(__name__)
 
 
+# Selectable Bedrock model ids surfaced by GET /models for the UI dropdown.
+# Curated for THIS project: general text-generation chat models suitable for
+# grounded, cited RAG synthesis (strong instruction-following, multilingual —
+# the bot answers in the user's locale incl. CJK). Limited to the amazon /
+# anthropic / qwen / deepseek / openai providers, and deliberately excludes
+# non-chat modalities (image / video / audio / embeddings / rerank) and
+# task-specialised variants (coder, vision, safety-classifier) that don't fit
+# a policy Q&A assistant. This is a static catalogue, not a live account query;
+# override LLM_MODEL for whatever your account+region actually grants.
+BEDROCK_MODEL_IDS: tuple[str, ...] = (
+    # Anthropic — best instruction-following / grounded synthesis for this task.
+    "anthropic.claude-sonnet-5",
+    "anthropic.claude-opus-4-8",
+    "anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Amazon Nova — text-generation tiers (premier → micro).
+    "amazon.nova-premier-v1:0",
+    "amazon.nova-pro-v1:0",
+    "amazon.nova-lite-v1:0",
+    "amazon.nova-micro-v1:0",
+    # Qwen — strong multilingual (incl. Chinese, which this bot supports).
+    "qwen.qwen3-235b-a22b-2507-v1:0",
+    "qwen.qwen3-32b-v1:0",
+    # DeepSeek — general + reasoning.
+    "deepseek.v3.2",
+    "deepseek.r1-v1:0",
+    # OpenAI.
+    "openai.gpt-5.4",
+    "openai.gpt-oss-120b-1:0",
+)
+
+
+def bedrock_model_infos() -> list[ModelInfo]:
+    """The curated selectable Bedrock chat models for GET /models."""
+    return [ModelInfo(name=model_id, provider="bedrock") for model_id in BEDROCK_MODEL_IDS]
+
+
 # Shared system-role framing, identical to the OpenAI-compatible client so the
 # grounding + safety contract is the same regardless of provider.
 _SYSTEM_PROMPT = (
-    "You are a W3C Process assistant constrained by source-grounded evidence. "
+    "You are a W3C Process and Patent Policy assistant constrained by source-grounded evidence. "
     "Follow the user's prompt rules exactly and do not reveal hidden reasoning."
 )
 
@@ -68,13 +105,19 @@ class BedrockClient:
         secret_access_key: str | None = None,
         session_token: str | None = None,
         timeout_seconds: float = 120,
+        max_answer_tokens: int = 4096,
     ) -> None:
         self.region = region
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
         self.session_token = session_token
         self.timeout_seconds = timeout_seconds
+        self.max_answer_tokens = max_answer_tokens
         self._runtime = None
+        # Model ids known to reject a supplied ``temperature`` (newest Claude
+        # models). Cached after the first rejection so we skip the doomed first
+        # call on every subsequent request instead of always paying two.
+        self._no_temperature_models: set[str] = set()
 
     def _client(self):
         """Build (and cache) the boto3 bedrock-runtime client on first use."""
@@ -153,9 +196,7 @@ class BedrockClient:
             model=model,
             system=[{"text": _SYSTEM_PROMPT}],
             prompt=prompt,
-            # Matches the OpenAI-compatible / Ollama budget for the depth rule
-            # in the system prompt.
-            max_tokens=1200,
+            max_tokens=self.max_answer_tokens,
             temperature=0.1,
         )
         return BedrockGeneration(text=_clean_model_text(text), model=model)
@@ -203,23 +244,25 @@ class BedrockClient:
             lighter_mode=lighter_mode,
         )
         messages = [{"role": "user", "content": [{"text": prompt}]}]
-        try:
-            response = self._client().converse_stream(
+        system = [{"text": _SYSTEM_PROMPT}]
+
+        def _open(temperature: float | None):
+            return self._client().converse_stream(
                 modelId=model,
-                system=[{"text": _SYSTEM_PROMPT}],
+                system=system,
                 messages=messages,
-                inferenceConfig=self._inference_config(1200, 0.1),
+                inferenceConfig=self._inference_config(self.max_answer_tokens, temperature),
             )
+
+        temperature = None if model in self._no_temperature_models else 0.1
+        try:
+            response = _open(temperature)
         except Exception as exc:
-            if not _is_sampling_param_error(exc):
+            if temperature is None or not _is_sampling_param_error(exc):
                 raise
             logger.info("Bedrock model %s rejected temperature; retrying stream without it", model)
-            response = self._client().converse_stream(
-                modelId=model,
-                system=[{"text": _SYSTEM_PROMPT}],
-                messages=messages,
-                inferenceConfig=self._inference_config(1200, None),
-            )
+            self._no_temperature_models.add(model)
+            response = _open(None)
         for event in response.get("stream", []):
             delta = event.get("contentBlockDelta")
             if not isinstance(delta, dict):
@@ -245,25 +288,27 @@ class BedrockClient:
         temperature: float,
     ) -> str:
         messages = [{"role": "user", "content": [{"text": prompt}]}]
-        try:
-            response = self._client().converse(
+
+        def _call(temp: float | None):
+            return self._client().converse(
                 modelId=model,
                 system=system,
                 messages=messages,
-                inferenceConfig=self._inference_config(max_tokens, temperature),
+                inferenceConfig=self._inference_config(max_tokens, temp),
             )
+
+        # The newest Claude models reject a supplied ``temperature``. Skip it
+        # up front once we've learned this model does; otherwise retry once
+        # without it (and remember) rather than dropping to the template.
+        effective = None if model in self._no_temperature_models else temperature
+        try:
+            response = _call(effective)
         except Exception as exc:
-            # The newest Claude models reject a supplied ``temperature``; retry
-            # once without it rather than dropping to the template fallback.
-            if not _is_sampling_param_error(exc):
+            if effective is None or not _is_sampling_param_error(exc):
                 raise
             logger.info("Bedrock model %s rejected temperature; retrying without it", model)
-            response = self._client().converse(
-                modelId=model,
-                system=system,
-                messages=messages,
-                inferenceConfig=self._inference_config(max_tokens, None),
-            )
+            self._no_temperature_models.add(model)
+            response = _call(None)
         blocks = response.get("output", {}).get("message", {}).get("content", [])
         if not isinstance(blocks, list):
             return ""

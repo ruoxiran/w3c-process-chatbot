@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     bedrock_secret_access_key: str | None = None
     bedrock_session_token: str | None = None
     bedrock_timeout_seconds: float = 120
+    # Answer output-token cap for Bedrock generation. Higher than the other
+    # providers' 1200 because reasoning models (Claude adaptive thinking,
+    # DeepSeek R1, ...) spend part of the budget on an internal reasoning block
+    # before emitting the answer text — too small a cap and they exhaust it
+    # thinking and return no answer.
+    bedrock_max_tokens: int = 4096
     # Bedrock Knowledge Base retrieval (bedrock-agent-runtime Retrieve). When
     # enabled, KB passages augment the local-corpus retrieval — they join the
     # candidate pool and are reranked/grounded like corpus chunks. Independent
