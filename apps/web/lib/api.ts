@@ -24,6 +24,7 @@ export type ChatResponse = {
   draft_contexts: DraftContext[];
   confidence: number;
   refusal_reason?: string | null;
+  notice?: string | null;
   source_version: {
     process_version_date?: string | null;
     process_commit_sha?: string | null;

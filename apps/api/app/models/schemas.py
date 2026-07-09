@@ -200,6 +200,11 @@ class ChatResponse(BaseModel):
     confidence: float = Field(ge=0, le=1)
     source_version: SourceVersion = Field(default_factory=SourceVersion)
     refusal_reason: str | None = None
+    # User-facing degradation notice, set when the answer is a limited fallback
+    # (LLM provider unreachable, override rejected, empty model output) rather
+    # than a real model generation. Always exposed to clients even when the
+    # audit blob is stripped, so the UI can flag that the answer is degraded.
+    notice: str | None = None
     workflow_trace: list[WorkflowStep] = Field(default_factory=list)
     audit: dict[str, Any] = Field(default_factory=dict)
 

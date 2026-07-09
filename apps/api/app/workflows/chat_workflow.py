@@ -17,6 +17,8 @@ from app.services.context import FOLLOW_UP_MARKERS, build_contextual_query, buil
 from app.services.evidence import check_evidence_coverage
 from app.services.github_context import GitHubDraftContextClient, build_draft_context_augmented_query
 from app.services.llm_router import LLMRouter
+from app.services.bedrock import BedrockClient
+from app.services.bedrock_kb import BedrockKnowledgeBaseClient
 from app.services.ollama import OllamaClient
 from app.services.openai_compatible import OpenAICompatibleClient
 from app.services.process_state import extract_process_state
@@ -59,6 +61,16 @@ _OPENAI_COMPATIBLE_PROVIDERS: frozenset[str] = frozenset(
 def is_openai_compatible_provider(provider: str) -> bool:
     """Public predicate exported for /v1/models in main.py."""
     return provider in _OPENAI_COMPATIBLE_PROVIDERS
+
+
+def _uses_lighter_prompt(provider: str) -> bool:
+    """Providers that get the softer formatting prompt instead of the strict one.
+
+    External token APIs (OpenAI-compatible cluster) and Bedrock models follow
+    the light-touch formatting guidance well; local Ollama needs the strict
+    block spelled out.
+    """
+    return is_openai_compatible_provider(provider) or provider == "bedrock"
 
 
 class ChatState(TypedDict, total=False):
@@ -196,6 +208,8 @@ class ChatWorkflow:
         retriever: Retriever | None = None,
         ollama_client: OllamaClient | None = None,
         openai_compatible_client: OpenAICompatibleClient | None = None,
+        bedrock_client: BedrockClient | None = None,
+        bedrock_kb_client: BedrockKnowledgeBaseClient | None = None,
         w3c_api_client: W3CAPIClient | None = None,
         github_context_client: GitHubDraftContextClient | None = None,
         compiled_context_store: CompiledContextStore | None = None,
@@ -212,6 +226,25 @@ class ChatWorkflow:
             settings.openai_compatible_api_key,
             settings.openai_compatible_timeout_seconds,
         )
+        # The boto3 client inside BedrockClient is built lazily on first use, so
+        # constructing this eagerly costs nothing and needs no AWS round-trip.
+        self.bedrock_client = bedrock_client or BedrockClient(
+            settings.bedrock_region,
+            settings.bedrock_api_key,
+            settings.bedrock_timeout_seconds,
+            settings.bedrock_max_tokens,
+        )
+        # Optional Bedrock Knowledge Base retriever. Only built when enabled and
+        # configured; None means the KB augmentation pass is skipped entirely.
+        self.bedrock_kb_client = bedrock_kb_client
+        if self.bedrock_kb_client is None and settings.bedrock_kb_enabled and settings.bedrock_kb_id:
+            self.bedrock_kb_client = BedrockKnowledgeBaseClient(
+                settings.bedrock_kb_id,
+                settings.bedrock_kb_region or settings.bedrock_region,
+                settings.bedrock_api_key,
+                settings.bedrock_kb_max_results,
+                settings.bedrock_timeout_seconds,
+            )
         self.w3c_api_client = w3c_api_client or W3CAPIClient(settings)
         self.github_context_client = github_context_client or GitHubDraftContextClient(settings)
         self.llm_router = llm_router or LLMRouter(settings, self._resolve_llm_client())
@@ -222,7 +255,7 @@ class ChatWorkflow:
             github_context_client=self.github_context_client,
         )
 
-    def _resolve_llm_client(self) -> OllamaClient | OpenAICompatibleClient:
+    def _resolve_llm_client(self) -> OllamaClient | OpenAICompatibleClient | BedrockClient:
         """Pick the client based on the configured ``llm_provider``.
 
         The router, reranker, citation verifier, and generator paths
@@ -230,12 +263,18 @@ class ChatWorkflow:
         it here means adding a new provider — say an Anthropic gateway
         served via OpenAI-compatible shape — is one edit, not five.
         """
+        if self.settings.llm_provider == "bedrock":
+            return self.bedrock_client
         if is_openai_compatible_provider(self.settings.llm_provider):
             return self.openai_compatible_client
         return self.ollama_client
 
     def _default_model_id(self) -> str:
-        """Default model id matching the resolved client."""
+        """Default model id matching the resolved client.
+
+        Ollama and Bedrock share ``llm_model``; only the OpenAI-compatible
+        cluster carries its own model id.
+        """
         if is_openai_compatible_provider(self.settings.llm_provider):
             return self.settings.openai_compatible_model
         return self.settings.llm_model
@@ -784,6 +823,36 @@ class ChatWorkflow:
         # what the user actually asked instead of being biased by the 10+
         # lines of task-planner / entity / router metadata in retrieval_query.
         citations = self.retriever.retrieve(retrieval_query, user_message=request.message)
+
+        # Bedrock Knowledge Base augmentation — one query per request (on the
+        # raw user message, best for the KB's semantic search). KB passages are
+        # merged ahead of the corpus hits so they're favoured, then the whole
+        # pool is reranked and grounded exactly like corpus chunks. Failures are
+        # non-fatal: the corpus retrieval still stands.
+        if self.bedrock_kb_client is not None:
+            try:
+                kb_hits = self.bedrock_kb_client.retrieve(request.message)
+            except Exception as exc:  # pragma: no cover - external service fallback
+                kb_hits = []
+                logger.warning("Bedrock KB retrieval failed; continuing without it", exc_info=exc)
+                audit["bedrock_kb_error"] = type(exc).__name__
+                _degrade("bedrock_kb_failed")
+            if kb_hits:
+                audit["bedrock_kb_hits"] = len(kb_hits)
+                citations = _merge_citations(kb_hits, citations, limit=12)
+                _record(trace,
+                    WorkflowStep(
+                        id="bedrock_kb",
+                        label="Bedrock Knowledge Base retrieval",
+                        status="completed",
+                        detail=(
+                            f"Retrieved {len(kb_hits)} passage(s) from the configured Bedrock "
+                            "Knowledge Base and merged them with the local corpus for reranking."
+                        ),
+                        references=kb_hits,
+                    )
+                )
+
         if rewrite_variants:
             extra_hits: list[Citation] = []
             for variant in rewrite_variants:
@@ -1119,6 +1188,8 @@ class ChatWorkflow:
                 logger.info("Provider override rejected: %s", exc)
         elif generation_provider == "ollama":
             generation_client = self.ollama_client
+        elif generation_provider == "bedrock":
+            generation_client = self.bedrock_client
         elif is_openai_compatible_provider(generation_provider):
             generation_client = self.openai_compatible_client
 
@@ -1136,8 +1207,9 @@ class ChatWorkflow:
             # (numbered-list incrementing, no bold-on-labels, the
             # 5-sub-bullet template) is swapped for a single "use
             # your judgement" line. Local Ollama keeps the strict
-            # prompt because it needs the structure spelled out.
-            lighter_mode = is_openai_compatible_provider(generation_provider)
+            # prompt because it needs the structure spelled out. Bedrock
+            # models (Claude et al.) follow the softer prompt well too.
+            lighter_mode = _uses_lighter_prompt(generation_provider)
             if lighter_mode:
                 audit["prompt_mode"] = "lighter"
             generation_kwargs = dict(
@@ -1436,6 +1508,7 @@ class ChatWorkflow:
             draft_contexts=draft_contexts,
             confidence=0.72 if citations else 0.45,
             source_version=source_version,
+            notice=_degradation_notice(audit),
             workflow_trace=trace,
             audit=audit,
         )
@@ -1564,6 +1637,35 @@ def _is_pure_reference(message: str) -> bool:
     return True
 
 
+def _degradation_notice(audit: dict) -> str | None:
+    """User-facing notice when the answer is a limited fallback, not a real
+    model generation. Returns None for healthy generations and for the
+    deliberately-offline ``template`` provider.
+    """
+    generation = audit.get("model_generation")
+    if generation == "template_fallback":
+        error = audit.get("model_error")
+        detail = f" ({error})" if error else ""
+        return (
+            f"The language model could not be reached{detail}. This is a limited "
+            "answer built only from the retrieved sources — check the model "
+            "provider configuration."
+        )
+    if generation == "override_rejected":
+        detail = audit.get("model_error_detail")
+        suffix = f": {detail}" if detail else ""
+        return (
+            f"The requested model provider was rejected{suffix}. This is a "
+            "limited answer built only from the retrieved sources."
+        )
+    if isinstance(generation, str) and generation.endswith("empty_fallback"):
+        return (
+            "The language model returned an empty response. This is a limited "
+            "answer built only from the retrieved sources."
+        )
+    return None
+
+
 def _model_generation_detail(model_generation: str, model: str) -> str:
     if model_generation == "ollama":
         return f"Used local Ollama model {model}; output was accepted after harness cleanup."
@@ -1572,6 +1674,13 @@ def _model_generation_detail(model_generation: str, model: str) -> str:
     if model_generation == "openai_compatible_empty_fallback":
         return (
             f"Called OpenAI-compatible model {model}, but its usable answer was empty, "
+            "so the workflow used the validated conservative answer."
+        )
+    if model_generation == "bedrock":
+        return f"Used AWS Bedrock model {model}; output was accepted after harness cleanup."
+    if model_generation == "bedrock_empty_fallback":
+        return (
+            f"Called AWS Bedrock model {model}, but its usable answer was empty, "
             "so the workflow used the validated conservative answer."
         )
     if model_generation == "ollama_empty_fallback":
@@ -1589,6 +1698,7 @@ def _selected_model(request: ChatRequest, settings: Settings) -> str:
         return request.model
     if is_openai_compatible_provider(settings.llm_provider):
         return settings.openai_compatible_model
+    # Ollama and Bedrock both read llm_model.
     return settings.llm_model
 
 
