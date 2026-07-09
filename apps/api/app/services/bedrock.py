@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -92,25 +93,22 @@ class BedrockClient:
     Llama, Titan, and others — so ``model`` is any Bedrock model id the account
     has access to (e.g. ``anthropic.claude-3-5-sonnet-20241022-v2:0``).
 
-    Credentials are supplied explicitly (no ambient AWS credential chain). The
-    boto3 client is built lazily on first use so importing / constructing this
-    class never requires boto3 to be installed unless Bedrock is the active
-    provider.
+    Authenticates with a Bedrock API key (bearer token) via the
+    AWS_BEARER_TOKEN_BEDROCK mechanism; the ambient AWS credential chain is not
+    used. The boto3 client is built lazily on first use so importing /
+    constructing this class never requires boto3 to be installed unless Bedrock
+    is the active provider.
     """
 
     def __init__(
         self,
         region: str,
-        access_key_id: str | None = None,
-        secret_access_key: str | None = None,
-        session_token: str | None = None,
+        api_key: str | None = None,
         timeout_seconds: float = 120,
         max_answer_tokens: int = 4096,
     ) -> None:
         self.region = region
-        self.access_key_id = access_key_id
-        self.secret_access_key = secret_access_key
-        self.session_token = session_token
+        self.api_key = api_key
         self.timeout_seconds = timeout_seconds
         self.max_answer_tokens = max_answer_tokens
         self._runtime = None
@@ -125,12 +123,13 @@ class BedrockClient:
             import boto3
             from botocore.config import Config
 
+            # boto3 reads the Bedrock API key from this env var (bearer-token
+            # auth); set it from config rather than relying on the ambient env.
+            if self.api_key:
+                os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self.api_key
             self._runtime = boto3.client(
                 "bedrock-runtime",
                 region_name=self.region,
-                aws_access_key_id=self.access_key_id,
-                aws_secret_access_key=self.secret_access_key,
-                aws_session_token=self.session_token,
                 config=Config(
                     read_timeout=self.timeout_seconds,
                     connect_timeout=self.timeout_seconds,

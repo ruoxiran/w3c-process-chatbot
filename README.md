@@ -70,12 +70,14 @@ For AWS Bedrock (model-agnostic — Claude, Nova, Llama, Titan — via the
 LLM_PROVIDER=bedrock
 LLM_MODEL=us.anthropic.claude-sonnet-5
 BEDROCK_REGION=us-east-1
-BEDROCK_ACCESS_KEY_ID=...
-BEDROCK_SECRET_ACCESS_KEY=...
-# BEDROCK_SESSION_TOKEN=   # only for temporary STS credentials
+BEDROCK_API_KEY=...        # generated in the Bedrock console under "API keys"
 ```
 
-The Bedrock model id is `LLM_MODEL` (shared with Ollama). Two gotchas:
+Authentication uses a **Bedrock API key** (bearer token) — generate one in the
+Amazon Bedrock console under "API keys" (long-term, IAM-user-scoped, or
+short-term/session). It's passed to boto3 via `AWS_BEARER_TOKEN_BEDROCK`; the
+ambient AWS credential chain is not consulted. The Bedrock model id is
+`LLM_MODEL` (shared with Ollama). Two gotchas:
 
 - **Use an inference profile, not a bare model id.** Current Claude models on
   Bedrock are only reachable through cross-region *inference profiles* — the
@@ -83,14 +85,13 @@ The Bedrock model id is `LLM_MODEL` (shared with Ollama). Two gotchas:
   on-demand ids like `anthropic.claude-3-5-sonnet-20241022-v2:0` are being
   retired and return `ResourceNotFoundException`. List what your account/region
   allows with `aws bedrock list-inference-profiles`.
-- **Credentials need invoke permission, and watch for org SCPs.** The IAM
-  principal must allow `bedrock:InvokeModel` and
+- **The key needs invoke permission, and watch for org SCPs.** The key's IAM
+  identity must allow `bedrock:InvokeModel` and
   `bedrock:InvokeModelWithResponseStream`. An **explicit deny in an AWS
-  Organizations Service Control Policy** overrides any IAM grant and blocks all
+  Organizations Service Control Policy** overrides any grant and blocks all
   invocation — that must be lifted by an org admin, and it must permit every
   region a cross-region profile can route to (a `us.` profile can hit
-  `us-east-1`/`us-east-2`/`us-west-2`). Credentials are read only from the
-  `BEDROCK_*` env vars, not the ambient AWS credential chain.
+  `us-east-1`/`us-east-2`/`us-west-2`).
 
 The model only synthesizes language. Process and Guidebook citations
 and the evidence checks still gate what the answer can claim.
@@ -109,7 +110,7 @@ BEDROCK_KB_ENABLED=true
 BEDROCK_KB_ID=XXXXXXXXXX
 BEDROCK_KB_REGION=us-east-1        # optional; defaults to BEDROCK_REGION
 BEDROCK_KB_MAX_RESULTS=8
-# reuses BEDROCK_ACCESS_KEY_ID / BEDROCK_SECRET_ACCESS_KEY
+# reuses BEDROCK_API_KEY
 ```
 
 It's independent of the generation provider — you can run KB retrieval with any

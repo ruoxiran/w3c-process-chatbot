@@ -1,5 +1,5 @@
 beautifulsoup4==4.12.3
-boto3==1.35.99
+boto3==1.43.44
 fastapi==0.115.6
 httpx==0.28.1
 numpy==2.2.6

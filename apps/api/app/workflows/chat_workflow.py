@@ -230,9 +230,7 @@ class ChatWorkflow:
         # constructing this eagerly costs nothing and needs no AWS round-trip.
         self.bedrock_client = bedrock_client or BedrockClient(
             settings.bedrock_region,
-            settings.bedrock_access_key_id,
-            settings.bedrock_secret_access_key,
-            settings.bedrock_session_token,
+            settings.bedrock_api_key,
             settings.bedrock_timeout_seconds,
             settings.bedrock_max_tokens,
         )
@@ -243,9 +241,7 @@ class ChatWorkflow:
             self.bedrock_kb_client = BedrockKnowledgeBaseClient(
                 settings.bedrock_kb_id,
                 settings.bedrock_kb_region or settings.bedrock_region,
-                settings.bedrock_access_key_id,
-                settings.bedrock_secret_access_key,
-                settings.bedrock_session_token,
+                settings.bedrock_api_key,
                 settings.bedrock_kb_max_results,
                 settings.bedrock_timeout_seconds,
             )

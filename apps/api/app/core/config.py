@@ -35,16 +35,15 @@ class Settings(BaseSettings):
     openai_compatible_api_key: str | None = None
     openai_compatible_model: str = "gpt-4.1"
     openai_compatible_timeout_seconds: float = 120
-    # AWS Bedrock (boto3 bedrock-runtime Converse API). Credentials are supplied
-    # explicitly via env; the ambient AWS credential chain is not consulted.
-    # The model id is shared with Ollama via ``llm_model`` (both are the
-    # "active provider" model). On Bedrock set ``LLM_MODEL`` to a cross-region
-    # inference profile, e.g. ``us.anthropic.claude-sonnet-5`` — bare on-demand
-    # ids are being retired.
+    # AWS Bedrock (boto3 bedrock-runtime Converse API). Authenticates with a
+    # Bedrock API key (bearer token) supplied via ``bedrock_api_key`` — passed
+    # to boto3 through the AWS_BEARER_TOKEN_BEDROCK mechanism; the ambient AWS
+    # credential chain is not consulted. The model id is shared with Ollama via
+    # ``llm_model`` (both are the "active provider" model). On Bedrock set
+    # ``LLM_MODEL`` to a cross-region inference profile, e.g.
+    # ``us.anthropic.claude-sonnet-5`` — bare on-demand ids are being retired.
     bedrock_region: str = "us-east-1"
-    bedrock_access_key_id: str | None = None
-    bedrock_secret_access_key: str | None = None
-    bedrock_session_token: str | None = None
+    bedrock_api_key: str | None = None
     bedrock_timeout_seconds: float = 120
     # Answer output-token cap for Bedrock generation. Higher than the other
     # providers' 1200 because reasoning models (Claude adaptive thinking,

@@ -13,6 +13,7 @@ built lazily so importing this module never requires boto3.
 from __future__ import annotations
 
 import logging
+import os
 
 from app.models.schemas import Citation, SourceType
 
@@ -39,17 +40,13 @@ class BedrockKnowledgeBaseClient:
         self,
         knowledge_base_id: str,
         region: str,
-        access_key_id: str | None = None,
-        secret_access_key: str | None = None,
-        session_token: str | None = None,
+        api_key: str | None = None,
         max_results: int = 8,
         timeout_seconds: float = 30,
     ) -> None:
         self.knowledge_base_id = knowledge_base_id
         self.region = region
-        self.access_key_id = access_key_id
-        self.secret_access_key = secret_access_key
-        self.session_token = session_token
+        self.api_key = api_key
         self.max_results = max_results
         self.timeout_seconds = timeout_seconds
         self._runtime = None
@@ -59,12 +56,13 @@ class BedrockKnowledgeBaseClient:
             import boto3
             from botocore.config import Config
 
+            # Bedrock API key (bearer-token auth), same mechanism as the
+            # generation client.
+            if self.api_key:
+                os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self.api_key
             self._runtime = boto3.client(
                 "bedrock-agent-runtime",
                 region_name=self.region,
-                aws_access_key_id=self.access_key_id,
-                aws_secret_access_key=self.secret_access_key,
-                aws_session_token=self.session_token,
                 config=Config(
                     read_timeout=self.timeout_seconds,
                     connect_timeout=self.timeout_seconds,

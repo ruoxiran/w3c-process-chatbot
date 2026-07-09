@@ -117,6 +117,16 @@ def test_list_models_is_empty() -> None:
     assert BedrockClient("us-east-1").list_models() == []
 
 
+def test_api_key_sets_bearer_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    client = BedrockClient("us-east-1", api_key="sk-bedrock-test-123")
+    # Building the boto3 client applies the key via the bearer-token env var.
+    client._client()
+    assert os.environ["AWS_BEARER_TOKEN_BEDROCK"] == "sk-bedrock-test-123"
+
+
 _ALLOWED_BEDROCK_PROVIDERS = {"amazon", "anthropic", "qwen", "deepseek", "openai"}
 
 
