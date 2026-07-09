@@ -40,6 +40,16 @@ jobs:
         # Once green, drop ``--exit-zero`` so violations fail the build.
         run: ruff check apps/api --exit-zero
 
+      - name: Build corpus
+        # The retriever/workflow tests and the deterministic eval run against
+        # the local corpus (data/corpus/chunks.jsonl)
+        # Build it from the W3C sources (clones w3c/process + w3c/guide
+        # and crawls the policy pages; needs network, no torch/LLM). Runs from
+        # the repo root so scripts/ and data/ resolve correctly.
+        run: |
+          python scripts/import_w3c_sources.py
+          python scripts/recut_chunks.py
+
       - name: Test (pytest)
         working-directory: apps/api
         run: pytest -q
