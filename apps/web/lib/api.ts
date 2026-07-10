@@ -332,6 +332,14 @@ export async function sendChatStream(
       body: JSON.stringify(body),
       signal: controller.signal,
     });
+  } catch (err) {
+    // Network-level failure before any bytes arrive — most commonly a proxy /
+    // CDN that can't carry a long-lived SSE stream over HTTP/3 (QUIC), which
+    // surfaces as ``TypeError: Failed to fetch`` / ERR_QUIC_PROTOCOL_ERROR.
+    // Fall back to the non-streaming endpoint, which is a single JSON response
+    // and does not depend on streaming working through the proxy.
+    clearTimeout(id);
+    return nonStreamingFallback(body, callbacks);
   } finally {
     // The timeout fires after the WHOLE stream completes, not during. Clearing
     // here means we rely on the network stack to keep the connection alive
@@ -340,7 +348,9 @@ export async function sendChatStream(
   }
 
   if (!response.ok || !response.body) {
-    throw new Error(`Chat stream request failed with ${response.status}`);
+    // Some proxies answer an SSE request with a non-2xx or an empty body
+    // instead of streaming; treat that the same as a network failure.
+    return nonStreamingFallback(body, callbacks);
   }
 
   const reader = response.body.getReader();
@@ -356,7 +366,17 @@ export async function sendChatStream(
   // text via ``onChunk`` during the delta phase and populates the
   // inspector via ``onMeta`` once it lands.
   while (true) {
-    const { done, value } = await reader.read();
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch {
+      // Stream aborted mid-flight (proxy / QUIC dropped the connection). If
+      // nothing usable arrived yet, fall back to the non-streaming endpoint;
+      // otherwise keep whatever we already streamed.
+      if (!meta && !accumulated) return nonStreamingFallback(body, callbacks);
+      break;
+    }
+    const { done, value } = chunk;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     let boundary = buffer.indexOf("\n\n");
@@ -404,6 +424,37 @@ export async function sendChatStream(
     throw new Error("Chat stream ended without a meta event");
   }
   return { ...meta, answer: accumulated } as ChatResponse;
+}
+
+/**
+ * Non-streaming fallback for ``sendChatStream``. Calls the plain ``/chat``
+ * JSON endpoint (a single request/response, no SSE) and drives the same
+ * callbacks so the UI behaves identically — the inspector still populates
+ * from the workflow trace and the answer appears in one shot. Used when the
+ * streaming connection can't be established or is dropped by an intermediary
+ * (e.g. a proxy that mishandles SSE over HTTP/3).
+ */
+async function nonStreamingFallback(
+  body: Record<string, unknown>,
+  callbacks: {
+    onStage?: (step: WorkflowStep) => void;
+    onMeta: (meta: Omit<ChatResponse, "answer">) => void;
+    onChunk: (accumulated: string, delta: string) => void;
+  }
+): Promise<ChatResponse> {
+  const result = await sendChat(
+    body.message as string,
+    body.model as string | undefined,
+    (body.history as ChatTurn[]) ?? [],
+    body.provider_choice as ProviderChoice | undefined
+  );
+  const { answer, ...meta } = result;
+  if (callbacks.onStage && Array.isArray(result.workflow_trace)) {
+    for (const step of result.workflow_trace) callbacks.onStage(step);
+  }
+  callbacks.onMeta(meta as Omit<ChatResponse, "answer">);
+  callbacks.onChunk(answer, answer);
+  return result;
 }
 
 // Exported for unit tests; not part of the public API surface.

@@ -152,6 +152,50 @@ describe("sendChatStream", () => {
     expect(response.answer).toBe("post-processed text");
   });
 
+  test("falls back to non-streaming /chat when the SSE fetch fails (e.g. QUIC error)", async () => {
+    const chatResponse = {
+      answer: "Fallback answer from /chat.",
+      in_scope: true,
+      citations: [],
+      next_steps: [],
+      next_step_details: [],
+      compiled_context_used: false,
+      resolved_entities: [],
+      draft_contexts: [],
+      confidence: 0.7,
+      source_version: {},
+      workflow_trace: [{ id: "scope", label: "Scope", status: "completed", detail: "ok", references: [] }],
+    };
+    // First call (/chat/stream) rejects like a dropped QUIC connection; the
+    // second call (/chat) returns a normal JSON response.
+    vi.mocked(fetch)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(chatResponse), { status: 200, headers: { "Content-Type": "application/json" } })
+      );
+
+    const stages: string[] = [];
+    let finalChunk = "";
+    const response = await sendChatStream(
+      "How does a Formal Objection work?",
+      {
+        onStage: (s) => stages.push(s.id),
+        onMeta: () => undefined,
+        onChunk: (acc) => { finalChunk = acc; },
+      },
+      "moonshot-v1-32k",
+      [],
+      "kimi",
+    );
+
+    expect(response.answer).toBe("Fallback answer from /chat.");
+    expect(finalChunk).toBe("Fallback answer from /chat.");
+    expect(stages).toEqual(["scope"]);
+    // Second fetch went to the non-streaming endpoint.
+    const secondUrl = vi.mocked(fetch).mock.calls[1][0] as string;
+    expect(secondUrl).toMatch(/\/chat$/);
+  });
+
   test("throws when the stream emits an error event", async () => {
     const stream = [
       'event: error\ndata: {"message":"upstream LLM down"}\n\n',
