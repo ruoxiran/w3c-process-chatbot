@@ -182,6 +182,11 @@ class ChatRequest(BaseModel):
     model: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,80}$")
     history: list[ChatTurn] = Field(default_factory=list, max_length=12)
     provider_override: ProviderOverride | None = None
+    # Server-side provider selection. Unlike ``provider_override`` (which
+    # carries a user-supplied endpoint + key from the browser), this just
+    # names one of the server's own configured providers — no secret ever
+    # leaves the server. The UI offers "kimi" and "bedrock".
+    provider_choice: Literal["kimi", "bedrock"] | None = None
 
 
 class ChatResponse(BaseModel):

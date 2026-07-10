@@ -238,8 +238,13 @@ async function fetchWithTimeout(
   }
 }
 
-export async function listModels(): Promise<ModelsResponse> {
-  const response = await fetchWithTimeout(`${API_BASE_URL}/models`);
+// The two providers offered in the UI. Both are configured server-side; the
+// browser only names one — it never sends a key.
+export type ProviderChoice = "kimi" | "bedrock";
+
+export async function listModels(provider?: ProviderChoice): Promise<ModelsResponse> {
+  const url = provider ? `${API_BASE_URL}/models?provider=${provider}` : `${API_BASE_URL}/models`;
+  const response = await fetchWithTimeout(url);
 
   if (!response.ok) {
     throw new Error(`Model request failed with ${response.status}`);
@@ -252,7 +257,7 @@ export async function sendChat(
   message: string,
   model?: string,
   history: ChatTurn[] = [],
-  providerOverride?: ProviderOverride
+  providerChoice?: ProviderChoice
 ): Promise<ChatResponse> {
   const body: Record<string, unknown> = {
     message,
@@ -260,8 +265,8 @@ export async function sendChat(
     model,
     history: history.slice(-8),
   };
-  if (providerOverride) {
-    body.provider_override = providerOverride;
+  if (providerChoice) {
+    body.provider_choice = providerChoice;
   }
   const response = await fetchWithTimeout(
     `${API_BASE_URL}/chat`,
@@ -304,7 +309,7 @@ export async function sendChatStream(
   },
   model?: string,
   history: ChatTurn[] = [],
-  providerOverride?: ProviderOverride
+  providerChoice?: ProviderChoice
 ): Promise<ChatResponse> {
   const body: Record<string, unknown> = {
     message,
@@ -312,8 +317,8 @@ export async function sendChatStream(
     model,
     history: history.slice(-8),
   };
-  if (providerOverride) {
-    body.provider_override = providerOverride;
+  if (providerChoice) {
+    body.provider_choice = providerChoice;
   }
 
   const controller = new AbortController();

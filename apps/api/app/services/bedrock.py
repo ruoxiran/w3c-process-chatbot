@@ -33,22 +33,21 @@ logger = logging.getLogger(__name__)
 # override LLM_MODEL for whatever your account+region actually grants.
 BEDROCK_MODEL_IDS: tuple[str, ...] = (
     # Anthropic — best instruction-following / grounded synthesis for this task.
-    "anthropic.claude-sonnet-5",
-    "anthropic.claude-opus-4-8",
-    "anthropic.claude-haiku-4-5-20251001-v1:0",
-    # Amazon Nova — text-generation tiers (premier → micro).
-    "amazon.nova-premier-v1:0",
+    # These require a cross-region inference profile (the ``us.`` prefix); the
+    # bare ``anthropic.*`` ids reject on-demand invocation.
+    "us.anthropic.claude-sonnet-5",
+    "us.anthropic.claude-opus-4-8",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Amazon Nova — text-generation tiers (pro → micro). On-demand, no profile.
     "amazon.nova-pro-v1:0",
     "amazon.nova-lite-v1:0",
     "amazon.nova-micro-v1:0",
     # Qwen — strong multilingual (incl. Chinese, which this bot supports).
-    "qwen.qwen3-235b-a22b-2507-v1:0",
     "qwen.qwen3-32b-v1:0",
-    # DeepSeek — general + reasoning.
+    # DeepSeek — general + reasoning (r1 via inference profile).
     "deepseek.v3.2",
-    "deepseek.r1-v1:0",
-    # OpenAI.
-    "openai.gpt-5.4",
+    "us.deepseek.r1-v1:0",
+    # OpenAI open-weight.
     "openai.gpt-oss-120b-1:0",
 )
 

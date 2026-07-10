@@ -1148,16 +1148,27 @@ class ChatWorkflow:
         classification = scope.classification
         router_model = scope.router_model
         override = request.provider_override
+        choice = request.provider_choice
 
         audit = ctx.audit
         answer = retrieval.template_answer
         citations = retrieval.citations
 
-        # When the user supplies a per-request provider override we use
-        # THEIR endpoint and model id; otherwise the server defaults.
-        # The api_key never leaves this function — it is consumed by
-        # the one-shot client and intentionally never written to audit.
-        if override is not None:
+        # Provider precedence:
+        #   1. provider_choice — names one of the server's OWN configured
+        #      providers ("kimi" / "bedrock"). No secret crosses the wire;
+        #      the server uses its own .env credentials. This is what the UI
+        #      sends.
+        #   2. provider_override — a user-supplied endpoint + key from the
+        #      browser (legacy; still validated for SSRF).
+        #   3. server default (settings.llm_provider).
+        if choice is not None:
+            generation_provider = "bedrock" if choice == "bedrock" else "openai-compatible"
+            selected_model = request.model or _default_model_for_provider(generation_provider, self.settings)
+            audit["model_provider_source"] = "choice"
+        elif override is not None:
+            # The api_key never leaves this function — it is consumed by the
+            # one-shot client and intentionally never written to audit.
             selected_model = override.model
             generation_provider = override.kind
             audit["model_provider_source"] = "override"
@@ -1176,7 +1187,14 @@ class ChatWorkflow:
         # Resolve which client handles this request. Override clients
         # are built per-request and never cached.
         generation_client: object | None = None
-        if override is not None:
+        if choice is not None:
+            # Server-side provider selection → server's own client. Bedrock
+            # uses the .env bearer key; kimi uses the .env OpenAI-compatible
+            # (moonshot) config. No per-request key to validate.
+            generation_client = (
+                self.bedrock_client if choice == "bedrock" else self.openai_compatible_client
+            )
+        elif override is not None:
             try:
                 generation_client = build_override_client(override, self.settings)
             except ProviderOverrideError as exc:
@@ -1699,6 +1717,20 @@ def _selected_model(request: ChatRequest, settings: Settings) -> str:
     if is_openai_compatible_provider(settings.llm_provider):
         return settings.openai_compatible_model
     # Ollama and Bedrock both read llm_model.
+    return settings.llm_model
+
+
+def _default_model_for_provider(provider: str, settings: Settings) -> str:
+    """Default model id when a provider_choice arrives without an explicit model.
+
+    Bedrock honours the server's configured ``llm_model`` when Bedrock is the
+    server default; otherwise a broadly-available on-demand Nova tier. Kimi /
+    OpenAI-compatible reads the configured ``openai_compatible_model``.
+    """
+    if provider == "bedrock":
+        return settings.llm_model if settings.llm_provider == "bedrock" else "amazon.nova-pro-v1:0"
+    if is_openai_compatible_provider(provider):
+        return settings.openai_compatible_model
     return settings.llm_model
 
 

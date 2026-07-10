@@ -130,16 +130,26 @@ def test_api_key_sets_bearer_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
 _ALLOWED_BEDROCK_PROVIDERS = {"amazon", "anthropic", "qwen", "deepseek", "openai"}
 
 
+def _model_family(model_id: str) -> str:
+    """Provider family, ignoring an optional cross-region inference-profile
+    prefix (``us.`` / ``eu.`` / ``apac.``) that some models require."""
+    parts = model_id.split(".")
+    if parts[0] in {"us", "eu", "apac"} and len(parts) > 1:
+        return parts[1]
+    return parts[0]
+
+
 def test_bedrock_model_catalogue() -> None:
     infos = bedrock_model_infos()
     assert len(infos) == len(BEDROCK_MODEL_IDS)
     assert all(info.provider == "bedrock" for info in infos)
     # No embeddings/non-chat models in the curated list.
     assert not any(info.is_embedding for info in infos)
-    # Limited to the five allowed model providers.
-    assert {name.split(".", 1)[0] for name in BEDROCK_MODEL_IDS} == _ALLOWED_BEDROCK_PROVIDERS
+    # Limited to the five allowed model providers (inference-profile prefix
+    # stripped first).
+    assert {_model_family(name) for name in BEDROCK_MODEL_IDS} == _ALLOWED_BEDROCK_PROVIDERS
     # The recommended default is present; excluded families/modalities are not.
-    assert "anthropic.claude-sonnet-5" in BEDROCK_MODEL_IDS
+    assert "us.anthropic.claude-sonnet-5" in BEDROCK_MODEL_IDS
     for excluded in (
         "amazon.nova-canvas-v1:0",       # image
         "amazon.nova-reel-v1:0",         # video

@@ -340,8 +340,46 @@ def source_status() -> SourceStatusResponse:
     )
 
 
+def _kimi_models() -> ModelsResponse:
+    """Live model list for the Kimi (OpenAI-compatible) provider, using the
+    server's own moonshot credentials — the browser never sends a key."""
+    try:
+        online_models = OpenAICompatibleClient(
+            settings.openai_compatible_base_url,
+            settings.openai_compatible_api_key,
+            settings.openai_compatible_timeout_seconds,
+        ).list_models()
+        return ModelsResponse(default_model=settings.openai_compatible_model, models=online_models)
+    except Exception as exc:  # pragma: no cover - external service fallback
+        logger.warning("kimi list_models failed", exc_info=exc)
+        return ModelsResponse(
+            default_model=settings.openai_compatible_model,
+            models=[ModelInfo(name=settings.openai_compatible_model, provider="openai-compatible", is_embedding=False)],
+            error=type(exc).__name__,
+        )
+
+
+def _bedrock_models() -> ModelsResponse:
+    """Curated Bedrock catalogue for the UI dropdown. Ensures the configured
+    default (LLM_MODEL) is always an option even if it's not in the list."""
+    models = bedrock_model_infos()
+    if all(model.name != settings.llm_model for model in models):
+        models.insert(0, ModelInfo(name=settings.llm_model, provider="bedrock"))
+    default = settings.llm_model if settings.llm_provider == "bedrock" else models[0].name
+    return ModelsResponse(default_model=default, models=models)
+
+
 @app.get("/models", response_model=ModelsResponse)
-def models() -> ModelsResponse:
+def models(provider: str | None = Query(default=None)) -> ModelsResponse:
+    # Per-provider listing so the UI can repopulate the model dropdown when the
+    # user switches provider. Both providers' credentials stay server-side.
+    if provider == "kimi" or provider == "openai-compatible":
+        return _kimi_models()
+    if provider == "bedrock":
+        return _bedrock_models()
+
+    # No explicit provider → report the server-default provider's models
+    # (backwards-compatible behaviour).
     if settings.llm_provider == "ollama":
         try:
             ollama_models = OllamaClient(
@@ -353,34 +391,9 @@ def models() -> ModelsResponse:
             logger.warning("ollama list_models failed", exc_info=exc)
             return ModelsResponse(default_model=settings.llm_model, models=[], error=type(exc).__name__)
     if is_openai_compatible_provider(settings.llm_provider):
-        try:
-            online_models = OpenAICompatibleClient(
-                settings.openai_compatible_base_url,
-                settings.openai_compatible_api_key,
-                settings.openai_compatible_timeout_seconds,
-            ).list_models()
-            return ModelsResponse(default_model=settings.openai_compatible_model, models=online_models)
-        except Exception as exc:  # pragma: no cover - external service fallback
-            logger.warning("openai-compatible list_models failed", exc_info=exc)
-            return ModelsResponse(
-                default_model=settings.openai_compatible_model,
-                models=[
-                    ModelInfo(
-                        name=settings.openai_compatible_model,
-                        provider="openai-compatible",
-                        is_embedding=False,
-                    )
-                ],
-                error=type(exc).__name__,
-            )
+        return _kimi_models()
     if settings.llm_provider == "bedrock":
-        # Curated Bedrock catalogue for the UI dropdown. Ensure the configured
-        # default (LLM_MODEL) is always an option, even if it's not in the list
-        # (e.g. an inference-profile id), so the dropdown's selection is valid.
-        models = bedrock_model_infos()
-        if all(model.name != settings.llm_model for model in models):
-            models.insert(0, ModelInfo(name=settings.llm_model, provider="bedrock"))
-        return ModelsResponse(default_model=settings.llm_model, models=models)
+        return _bedrock_models()
     return ModelsResponse(default_model=settings.llm_model, models=[])
 
 

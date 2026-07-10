@@ -116,6 +116,42 @@ describe("sendChatStream", () => {
     expect(response.in_scope).toBe(true);
   });
 
+  test("uses done.answer when no deltas arrive (LLM failed, template fallback)", async () => {
+    const deltas: string[] = [];
+    const stream = [
+      'event: meta\ndata: {"in_scope":true,"citations":[],"next_steps":[],"next_step_details":[],"compiled_context_used":false,"resolved_entities":[],"draft_contexts":[],"confidence":0.5,"source_version":{},"workflow_trace":[]}\n\n',
+      'event: done\ndata: {"answer":"Template fallback answer [S1]."}\n\n',
+    ];
+    vi.mocked(fetch).mockResolvedValue(fakeStreamingResponse(stream));
+
+    const response = await sendChatStream(
+      "How is a Formal Objection handled?",
+      {
+        onMeta: () => undefined,
+        onChunk: (acc) => deltas.push(acc),
+      },
+    );
+
+    expect(response.answer).toBe("Template fallback answer [S1].");
+    expect(deltas).toContain("Template fallback answer [S1].");
+  });
+
+  test("prefers done.answer over accumulated deltas when they differ", async () => {
+    const stream = [
+      'event: delta\ndata: {"text":"raw streamed text"}\n\n',
+      'event: meta\ndata: {"in_scope":true,"citations":[],"next_steps":[],"next_step_details":[],"compiled_context_used":false,"resolved_entities":[],"draft_contexts":[],"confidence":0.5,"source_version":{},"workflow_trace":[]}\n\n',
+      'event: done\ndata: {"answer":"post-processed text"}\n\n',
+    ];
+    vi.mocked(fetch).mockResolvedValue(fakeStreamingResponse(stream));
+
+    const response = await sendChatStream(
+      "What is a WD?",
+      { onMeta: () => undefined, onChunk: () => undefined },
+    );
+
+    expect(response.answer).toBe("post-processed text");
+  });
+
   test("throws when the stream emits an error event", async () => {
     const stream = [
       'event: error\ndata: {"message":"upstream LLM down"}\n\n',
@@ -181,7 +217,7 @@ describe("sendChatStream", () => {
     expect(deltas).toEqual(["A", "B"]);
   });
 
-  test("passes the provider_override to the backend when supplied", async () => {
+  test("passes the provider_choice to the backend when supplied", async () => {
     const stream = [
       'event: meta\ndata: {"in_scope":true,"citations":[],"next_steps":[],"next_step_details":[],"compiled_context_used":false,"resolved_entities":[],"draft_contexts":[],"confidence":0.5,"source_version":{},"workflow_trace":[]}\n\n',
     ];
@@ -190,21 +226,16 @@ describe("sendChatStream", () => {
     await sendChatStream(
       "anything",
       { onMeta: () => undefined, onChunk: () => undefined },
-      "my-model",
+      "us.anthropic.claude-sonnet-5",
       [],
-      {
-        kind: "openai-compatible",
-        base_url: "https://api.example.com/v1",
-        api_key: "sk-test",
-        model: "my-model",
-      },
+      "bedrock",
     );
 
     const call = vi.mocked(fetch).mock.calls[0];
     const init = call[1] as RequestInit;
     const body = JSON.parse(init.body as string);
-    expect(body.provider_override).toBeDefined();
-    expect(body.provider_override.api_key).toBe("sk-test");
-    expect(body.model).toBe("my-model");
+    expect(body.provider_choice).toBe("bedrock");
+    expect(body.model).toBe("us.anthropic.claude-sonnet-5");
+    expect(body.provider_override).toBeUndefined();
   });
 });

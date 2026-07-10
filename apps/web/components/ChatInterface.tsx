@@ -2,18 +2,10 @@
 
 import { FormEvent, KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { CitationPanel } from "@/components/CitationPanel";
-import {
-  ModelSettings,
-  configToOverride,
-  describeConfig,
-  loadSavedConfig,
-  type SavedConfig,
-} from "@/components/ModelSettings";
 import { WorkflowPanel } from "@/components/WorkflowPanel";
 import {
   listModels,
   runEval,
-  sendChat,
   sendChatStream,
   submitFeedback,
   type ChatResponse,
@@ -24,9 +16,26 @@ import {
   type ChatTurn,
   type FeedbackRating,
   type ModelInfo,
+  type ProviderChoice,
   type W3CEntity,
   type WorkflowStep
 } from "@/lib/api";
+
+// The two providers offered in the UI. Both are configured server-side; the
+// browser only names one, never a key. Persisted in localStorage so the
+// choice survives a refresh.
+const PROVIDERS: { value: ProviderChoice; label: string }[] = [
+  { value: "bedrock", label: "AWS Bedrock" },
+  { value: "kimi", label: "Kimi (Moonshot)" },
+];
+const PROVIDER_STORAGE_KEY = "w3c-provider-choice";
+const DEFAULT_PROVIDER: ProviderChoice = "bedrock";
+
+function loadProviderChoice(): ProviderChoice {
+  if (typeof window === "undefined") return DEFAULT_PROVIDER;
+  const saved = window.localStorage.getItem(PROVIDER_STORAGE_KEY);
+  return saved === "kimi" || saved === "bedrock" ? saved : DEFAULT_PROVIDER;
+}
 
 const starterQuestions = [
   "What should a CSS specification do next to move from CR to REC?",
@@ -50,23 +59,19 @@ export function ChatInterface() {
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
-  const [selectedModel, setSelectedModel] = useState("qwen3:8b");
+  const [selectedModel, setSelectedModel] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [selectedResponse, setSelectedResponse] = useState<ChatResponse | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("workflow");
   const [evalRun, setEvalRun] = useState<EvalRunResponse | null>(null);
   const [isEvalLoading, setIsEvalLoading] = useState(false);
   const [evalError, setEvalError] = useState<string | null>(null);
-  // Provider override (user's own LLM endpoint + key, stored in localStorage
-  // only). ``null`` while we hydrate from storage; ``{kind: "default"}`` once
-  // we've checked. This avoids sending an override on the very first server
-  // render in case localStorage had stale data.
-  const [providerConfig, setProviderConfig] = useState<SavedConfig | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-
-  useEffect(() => {
-    setProviderConfig(loadSavedConfig());
-  }, []);
+  // Which server-side provider to use for generation. Selecting one
+  // repopulates the model dropdown from that provider's model list. No key
+  // ever leaves the server — the request carries only this provider name.
+  // Lazy initializer reads the saved choice once (client-only; returns the
+  // default under SSR where window is undefined).
+  const [provider, setProvider] = useState<ProviderChoice>(loadProviderChoice);
 
   // Auto-scroll the conversation pane to the bottom whenever a new
   // message lands (user question, pending placeholder, or streamed
@@ -96,19 +101,27 @@ export function ChatInterface() {
   );
   const activeResponse = selectedResponse ?? latestResponse;
 
+  // Load the selected provider's models whenever the provider changes, and
+  // persist the choice. The model dropdown repopulates and defaults to the
+  // provider's default model.
   useEffect(() => {
     let cancelled = false;
 
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(PROVIDER_STORAGE_KEY, provider);
+    }
+
     async function loadModels() {
       try {
-        const result = await listModels();
+        const result = await listModels(provider);
         if (cancelled) return;
         const chatModels = result.models.filter((model) => !model.is_embedding);
         setModels(chatModels);
-        setSelectedModel(result.default_model || chatModels[0]?.name || "qwen3:8b");
+        setSelectedModel(result.default_model || chatModels[0]?.name || "");
       } catch {
         if (!cancelled) {
           setModels([]);
+          setSelectedModel("");
         }
       }
     }
@@ -118,7 +131,7 @@ export function ChatInterface() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [provider]);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -151,7 +164,6 @@ export function ChatInterface() {
     setInspectorTab("workflow");
 
     try {
-      const override = providerConfig ? configToOverride(providerConfig) : undefined;
       // Streaming path: update the bubble + inspector progressively as the
       // Streaming flow: server emits pre-LLM ``stage`` events as each
       // workflow node completes (so the inspector populates progressively),
@@ -213,7 +225,7 @@ export function ChatInterface() {
         },
         selectedModel,
         history,
-        override
+        provider
       );
       setSelectedResponse(result);
       setMessages((current) =>
@@ -289,50 +301,40 @@ export function ChatInterface() {
             <h1 id="page-title">W3C Process Assistant</h1>
           </div>
           <div className="topbar-actions">
-            {providerConfig && providerConfig.kind !== "default" ? (
-              <span className="provider-chip" title="Using your own provider">
-                {describeConfig(providerConfig)}
-              </span>
-            ) : (
-              <>
-                <label htmlFor="model">Model</label>
-                <select
-                  id="model"
-                  value={selectedModel}
-                  onChange={(event) => setSelectedModel(event.target.value)}
-                >
-                  {models.length ? (
-                    models.map((model) => (
-                      <option key={model.name} value={model.name}>
-                        {model.name}
-                      </option>
-                    ))
-                  ) : (
-                    <option value={selectedModel}>{selectedModel}</option>
-                  )}
-                </select>
-              </>
-            )}
-            <button
-              className="button-quiet"
-              type="button"
-              onClick={() => setSettingsOpen(true)}
-              aria-haspopup="dialog"
+            <label htmlFor="provider">Provider</label>
+            <select
+              id="provider"
+              value={provider}
+              onChange={(event) => setProvider(event.target.value as ProviderChoice)}
             >
-              Model settings
-            </button>
+              {PROVIDERS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <label htmlFor="model">Model</label>
+            <select
+              id="model"
+              value={selectedModel}
+              onChange={(event) => setSelectedModel(event.target.value)}
+              disabled={!models.length}
+            >
+              {models.length ? (
+                models.map((model) => (
+                  <option key={model.name} value={model.name}>
+                    {model.name}
+                  </option>
+                ))
+              ) : (
+                <option value="">Loading…</option>
+              )}
+            </select>
             <button className="button-secondary" type="button" onClick={clearConversation}>
               New chat
             </button>
           </div>
         </div>
-
-        <ModelSettings
-          open={settingsOpen}
-          current={providerConfig ?? { kind: "default" }}
-          onClose={() => setSettingsOpen(false)}
-          onSave={setProviderConfig}
-        />
 
         <div
           ref={conversationRef}
