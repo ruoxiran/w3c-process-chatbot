@@ -51,3 +51,50 @@ def test_discover_internal_links_stays_inside_guide_and_dedupes() -> None:
     )
 
     assert links == ["https://www.w3.org/guide/teamcontact"]
+
+
+def test_canonical_url_preserves_policies_landing_trailing_slash() -> None:
+    # /policies/ must keep its trailing slash — www.w3.org rejects the
+    # slashless /policies form mid-handshake, so stripping it broke the
+    # crawl seed. Sub-pages still get the slash stripped (canonical form).
+    assert (
+        import_w3c_sources.canonical_url("https://www.w3.org/policies/#contrib")
+        == "https://www.w3.org/policies/"
+    )
+    assert (
+        import_w3c_sources.canonical_url("https://www.w3.org/policies/email/")
+        == "https://www.w3.org/policies/email"
+    )
+
+
+def test_discover_internal_links_honours_exclude_prefixes() -> None:
+    # The /policies/ crawl excludes pages that already have their own
+    # dedicated source (process, patent-policy, code-of-conduct,
+    # antitrust) so they are not re-ingested under repo_name "policies".
+    html = """
+    <main>
+      <a href="/policies/email/">Email policy</a>
+      <a href="/policies/process/#intro">Process (excluded)</a>
+      <a href="/policies/patent-policy/">Patent Policy (excluded)</a>
+      <a href="/policies/code-of-conduct/">CoC (excluded)</a>
+      <a href="/policies/antitrust-2024/">Antitrust versioned (excluded)</a>
+      <a href="/policies/logos/">Logos policy</a>
+    </main>
+    """
+
+    links = import_w3c_sources.discover_internal_links(
+        html,
+        base_url="https://www.w3.org/policies/",
+        root_url="https://www.w3.org/policies/",
+        exclude_prefixes=[
+            "/policies/process",
+            "/policies/patent-policy",
+            "/policies/code-of-conduct",
+            "/policies/antitrust",
+        ],
+    )
+
+    assert links == [
+        "https://www.w3.org/policies/email",
+        "https://www.w3.org/policies/logos",
+    ]
