@@ -124,13 +124,11 @@ class OpenAICompatibleClient:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            # Thinking models (Kimi k2.5, o-series style) spend reasoning
-            # tokens from the SAME budget before emitting any answer text;
-            # 1200 was exhausted mid-thought, returning an empty answer.
-            # The prompt's depth rules cap the visible answer length, so a
-            # larger ceiling doesn't produce longer answers on non-thinking
-            # models — it only leaves room for hidden reasoning.
-            max_tokens=4096,
+            # Generous ceiling: the prompt now asks for thorough, in-depth
+            # answers, and thinking models (Kimi k2.5) also spend part of this
+            # budget on hidden reasoning before emitting text. 8192 leaves room
+            # for a long grounded answer without truncating mid-sentence.
+            max_tokens=8192,
         )
         return OpenAICompatibleGeneration(text=_clean_model_text(text), model=model)
 
@@ -189,10 +187,9 @@ class OpenAICompatibleClient:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.1,
-            # Streaming path matches the sync path budget; the depth
-            # rule applies to BOTH paths. 4096 leaves room for thinking
-            # models whose reasoning tokens share this budget.
-            "max_tokens": 4096,
+            # Matches the sync path: a generous ceiling for thorough answers,
+            # with headroom for thinking models whose reasoning shares it.
+            "max_tokens": 8192,
             "stream": True,
         }
         # Mirror ``_post_with_backoff`` for the streaming connection: retry

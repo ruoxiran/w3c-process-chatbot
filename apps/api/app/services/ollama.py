@@ -170,10 +170,13 @@ _STRICT_FORMATTING_BLOCK = """- For "how do I do X" / "how to X" procedural ques
 # frontend renderer DEPENDS on it. A bare ``https://...`` URL in the
 # answer text shows up as plain text, not a clickable link. So even
 # in lighter mode this rule is non-negotiable.
-_LIGHTER_FORMATTING_BLOCK = """- Structure the answer the way the question warrants. Short for definitions, chronological numbered steps for "how do I X" workflows (start at the entry point — channel / URL / form / first action — not at an advanced feature just because its excerpt repeats the keyword most), prose for explanatory questions. Trust your judgement on length and depth; match the user's question, do not pad to a template.
-- For multi-step workflows, lean toward depth on each step — what to do, where (markdown-linked surface), what to include in the request, who reviews, what "done" looks like — but only include each detail when the cited excerpts actually support it. Concision beats false specificity.
+_LIGHTER_FORMATTING_BLOCK = """- BE THOROUGH AND COMPREHENSIVE. This is a reference assistant for W3C practitioners (chairs, editors, Team contacts) making real process decisions — they want the full, well-explained picture, not a one-liner. Draw on ALL of the relevant cited excerpts, not just one or two. Explain not only WHAT the rule or step is but WHY it exists, what it depends on, what commonly goes wrong, and how the pieces connect — as long as every point is grounded in the excerpts. A complete, well-organised answer is far more useful than a terse one; do not artificially compress.
+- Open with a short direct answer (2-4 sentences) to the question, then develop it in depth. Use whatever length the cited material genuinely supports — a rich topic deserves several well-developed paragraphs and/or a full step list. Only a truly simple definition should be short.
+- Shape by question type: chronological numbered steps for "how do I X" workflows (start at the entry point — channel / URL / form / first action — then walk the full sequence to the end state); clearly organised prose (short bold sub-headings are welcome) for explanatory or comparative questions. Cover EVERY step and sub-point the excerpts support rather than truncating to a fixed count.
+- For each workflow step, give real depth: what to do, where (markdown-linked surface), what to include in the request, who reviews and responds, what "done" / the next gate looks like, plus any preconditions, deadlines, or gotchas the excerpts mention.
+- Where the excerpts provide useful surrounding context — background, rationale, related requirements, exceptions, edge cases, adjacent stages — fold it in. Breadth and accuracy grounded in the sources are the goal; the only hard limit on length is that every claim must trace to an excerpt.
 - LINK FORMAT (load-bearing — the frontend renderer reads this): every action URL you write MUST be in markdown link form ``[short label](url)``. For example ``[file an i18n review request](https://github.com/w3c/i18n-request/issues/new/choose)``, ``[Zakim chapter](https://www.w3.org/guide/meetings/zakim.html)``, ``[email the chairs](mailto:chairs@example.org)``. Never write a bare ``https://...`` URL or ``url=https://...`` in the answer — those render as inert plain text.
-- Add a Process-vs-Guidebook note only when the question asks about authority OR the two sources clearly conflict."""
+- Include a short Process-vs-Guidebook note whenever it helps the reader understand which requirements are normative (Process) versus recommended practice (Guidebook), and always when the two differ."""
 
 
 def build_prompt(
@@ -209,7 +212,13 @@ def build_prompt(
     )
     language = "English" if locale.startswith("en") else "the same language as the user question"
     formatting_block = _LIGHTER_FORMATTING_BLOCK if lighter_mode else _STRICT_FORMATTING_BLOCK
-    return f"""You are a W3C Process assistant constrained by a safety harness.
+    return f"""You are an expert W3C Process and Guidebook assistant. Your job is
+to give thorough, accurate, well-explained answers grounded in the trusted
+excerpts below. Aim for depth and completeness: cover the full picture the
+excerpts support — the rule, how it works in practice, the surrounding
+context, and what the reader should do next — rather than a brief summary.
+Accuracy comes from staying grounded in the cited excerpts, not from being
+short.
 
 Answer in {language}. The ENTIRE answer must be in {language}; do not switch
 languages mid-sentence and do not mix in any other-language tokens (e.g. do
@@ -287,8 +296,11 @@ User question:
 
 def _format_source(index: int, citation: Citation) -> str:
     quote = (citation.quote or "").strip()
-    if len(quote) > 500:
-        quote = f"{quote[:500].rsplit(' ', 1)[0]}..."
+    # Give the model most of each excerpt so it can synthesise thorough,
+    # accurate answers. Large-context models (Claude/Nova/Kimi) handle the
+    # extra tokens easily; recut chunks cap near 1500 chars.
+    if len(quote) > 1200:
+        quote = f"{quote[:1200].rsplit(' ', 1)[0]}..."
     heading = citation.heading_path or citation.title
     return (
         f"[S{index}] type={citation.source_type.value}; title={citation.title}; heading={heading}; "

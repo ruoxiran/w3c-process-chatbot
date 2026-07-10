@@ -227,7 +227,12 @@ class Retriever:
                         if isinstance(chunk.get("published_version_date"), str)
                         else None
                     ),
-                    quote=str(chunk.get("text") or "")[:420],
+                    # Fuller excerpt text so the model synthesises from more
+                    # context (richer, more accurate answers) and the citation
+                    # verifier has more text to match claims against (fewer
+                    # spurious [unverified] flags). Recut chunks cap at ~1500
+                    # chars, so 1200 captures nearly all of each chunk.
+                    quote=str(chunk.get("text") or "")[:1200],
                 )
             )
         return _ensure_topic_entrypoint_citations(user_message, citations, limit)
