@@ -210,19 +210,44 @@ describe("sendChatStream", () => {
     ).rejects.toThrow(/upstream LLM down/);
   });
 
-  test("throws when the stream ends without a meta event", async () => {
-    const stream = [
-      'event: delta\ndata: {"text":"only deltas"}\n\n',
-      "event: done\ndata: {}\n\n",
-    ];
-    vi.mocked(fetch).mockResolvedValue(fakeStreamingResponse(stream));
+  test("falls back to non-streaming /chat when the stream ends without a meta event", async () => {
+    const chatResponse = {
+      answer: "Recovered via /chat.",
+      in_scope: true,
+      citations: [],
+      next_steps: [],
+      next_step_details: [],
+      compiled_context_used: false,
+      resolved_entities: [],
+      draft_contexts: [],
+      confidence: 0.7,
+      source_version: {},
+      workflow_trace: [],
+    };
+    // The stream delivers some deltas then ends WITHOUT a meta event — a proxy
+    // dropping the SSE body cleanly (rather than raising). The fallback /chat
+    // call then returns a normal JSON response.
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        fakeStreamingResponse([
+          'event: delta\ndata: {"text":"only deltas"}\n\n',
+          "event: done\ndata: {}\n\n",
+        ]),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(chatResponse), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
 
-    await expect(
-      sendChatStream(
-        "anything",
-        { onMeta: () => undefined, onChunk: () => undefined },
-      ),
-    ).rejects.toThrow(/meta event/);
+    let finalChunk = "";
+    const response = await sendChatStream(
+      "anything",
+      { onMeta: () => undefined, onChunk: (acc) => { finalChunk = acc; } },
+    );
+
+    expect(response.answer).toBe("Recovered via /chat.");
+    expect(finalChunk).toBe("Recovered via /chat.");
+    const secondUrl = vi.mocked(fetch).mock.calls[1][0] as string;
+    expect(secondUrl).toMatch(/\/chat$/);
   });
 
   test("throws when the response is not OK", async () => {

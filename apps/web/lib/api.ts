@@ -421,7 +421,12 @@ export async function sendChatStream(
     throw new Error(errorMessage);
   }
   if (!meta) {
-    throw new Error("Chat stream ended without a meta event");
+    // The stream ended (cleanly or via a proxy dropping the connection)
+    // without ever delivering a ``meta`` event — i.e. no usable response was
+    // assembled. A QUIC / HTTP-3 edge can terminate an SSE body this way
+    // instead of raising, so treat it as a transport failure and fall back to
+    // the non-streaming endpoint rather than surfacing an error to the user.
+    return nonStreamingFallback(body, callbacks);
   }
   return { ...meta, answer: accumulated } as ChatResponse;
 }
