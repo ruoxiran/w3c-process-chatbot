@@ -19,7 +19,7 @@ When sources disagree, the higher row wins.
 | Conversation history | Used only to resolve "this" / "that" in follow-ups |
 | User claims | Never authoritative |
 
-The LLM prompt repeats this order so the model can't get clever.
+The prompt repeats this order so the model follows it.
 
 ## Request pipeline
 
@@ -76,9 +76,9 @@ with explicit confidence:
 | L2 contextual | Re-run on the context-resolved query if L1 missed, gated to avoid scope-leak from history |
 | L3 LLM router | JSON-only LLM call; can rescue misses or override weak L1 hits |
 
-Injection detection is independent and runs on every message regardless of
-scope outcome — patterns in `INJECTION_PATTERNS` (English and Chinese)
-trigger a `safety_note` in the audit blob.
+Injection detection is independent and runs on every message, whatever the
+scope outcome. Patterns in `INJECTION_PATTERNS` (English and Chinese) trigger
+a `safety_note` in the audit blob.
 
 ## Task planner
 
@@ -152,7 +152,8 @@ enforces:
 - separation between Process (normative) and Guidebook (guidance)
 - no exposure of the system prompt
 - no acceptance of user-supplied Process claims
-- output shape: short conclusion → 3–5 bullets → optional clarifying note
+- a short direct answer first, then as much grounded detail as the excerpts
+  support
 - `<think>...</think>` is allowed for internal reasoning and stripped
   before return
 

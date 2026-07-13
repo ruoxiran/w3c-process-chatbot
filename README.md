@@ -1,12 +1,12 @@
 # W3C Process Chatbot
 
-A scope-gated chat assistant for the W3C Process Document and Guidebook. It
-only answers W3C standards-workflow questions, grounds every claim in
-allowlisted sources, and exposes the full retrieval/workflow trace next to
-each answer.
+A chat assistant for the W3C Process Document and Guidebook. It only answers
+questions about the W3C standards workflow, and every answer is built from
+allowlisted sources with the retrieval and workflow trace shown next to it.
 
-It is not an open chatbot. It is a deterministic workflow with the model in
-a constrained synthesis role.
+It is not an open chatbot. The model does not answer on its own. It sits
+inside a fixed workflow and only writes the final text from the sources the
+workflow retrieved.
 
 ## Layout
 
@@ -23,7 +23,7 @@ scripts/      Ingestion, embeddings cache, evaluation utilities
 
 ```bash
 cp .env.example .env
-# Python 3.11–3.13 required (3.14 not yet supported by pinned numpy/torch)
+# Python 3.11 to 3.13 (3.14 not yet supported by pinned numpy/torch)
 python3.13 -m venv .venv && source .venv/bin/activate
 pip install -r apps/api/requirements.txt
 uvicorn app.main:app --reload --app-dir apps/api
@@ -37,9 +37,9 @@ cd apps/web && npm install && npm run dev
 
 Open <http://localhost:3000>.
 
-The API and web both start without a model or vector index; the workflow
-returns grounded fallback answers and scope refusals. Wire up a provider via
-`.env` to get full LLM generation.
+The API and web both start without a model or vector index. In that state the
+workflow returns grounded template answers and scope refusals. Set a provider
+in `.env` to get full LLM answers.
 
 ## Model providers
 
@@ -54,7 +54,7 @@ returns grounded fallback answers and scope refusals. Wire up a provider via
 | `bedrock`          | AWS Bedrock via the boto3 Converse API (`LLM_MODEL`)     |
 | `template`         | No LLM, deterministic template only                      |
 
-For an OpenAI-compatible provider:
+OpenAI-compatible provider:
 
 ```env
 LLM_PROVIDER=openai-compatible
@@ -63,8 +63,8 @@ OPENAI_COMPATIBLE_API_KEY=...
 OPENAI_COMPATIBLE_MODEL=gpt-4.1
 ```
 
-For AWS Bedrock (model-agnostic — Claude, Nova, Llama, Titan — via the
-`bedrock-runtime` Converse API):
+AWS Bedrock (Claude, Nova, Llama, Titan, and others through the same Converse
+API):
 
 ```env
 LLM_PROVIDER=bedrock
@@ -73,37 +73,26 @@ BEDROCK_REGION=us-east-1
 BEDROCK_API_KEY=...        # generated in the Bedrock console under "API keys"
 ```
 
-Authentication uses a **Bedrock API key** (bearer token) — generate one in the
-Amazon Bedrock console under "API keys" (long-term, IAM-user-scoped, or
-short-term/session). It's passed to boto3 via `AWS_BEARER_TOKEN_BEDROCK`; the
-ambient AWS credential chain is not consulted. The Bedrock model id is
-`LLM_MODEL` (shared with Ollama). Two gotchas:
+Auth uses a Bedrock API key (a bearer token), passed to boto3 through
+`AWS_BEARER_TOKEN_BEDROCK`. The ambient AWS credential chain is not used. Two
+things to watch:
 
-- **Use an inference profile, not a bare model id.** Current Claude models on
-  Bedrock are only reachable through cross-region *inference profiles* — the
-  `us.` / `global.` prefix (e.g. `us.anthropic.claude-sonnet-5`). Bare
-  on-demand ids like `anthropic.claude-3-5-sonnet-20241022-v2:0` are being
-  retired and return `ResourceNotFoundException`. List what your account/region
-  allows with `aws bedrock list-inference-profiles`.
-- **The key needs invoke permission, and watch for org SCPs.** The key's IAM
-  identity must allow `bedrock:InvokeModel` and
-  `bedrock:InvokeModelWithResponseStream`. An **explicit deny in an AWS
-  Organizations Service Control Policy** overrides any grant and blocks all
-  invocation — that must be lifted by an org admin, and it must permit every
-  region a cross-region profile can route to (a `us.` profile can hit
-  `us-east-1`/`us-east-2`/`us-west-2`).
+- Claude models on Bedrock need a cross-region inference profile, so use the
+  `us.` prefix (`us.anthropic.claude-sonnet-5`), not the bare model id. Run
+  `aws bedrock list-inference-profiles` to see what your account allows.
+- The key's IAM identity needs `bedrock:InvokeModel` and
+  `bedrock:InvokeModelWithResponseStream`. An explicit deny in an AWS
+  Organizations SCP overrides any grant, so an org admin may need to lift it.
 
-The model only synthesizes language. Process and Guidebook citations
-and the evidence checks still gate what the answer can claim.
+The model only writes language. The citations and evidence checks still decide
+what the answer is allowed to claim.
 
 ### Bedrock Knowledge Base retrieval (optional)
 
-Separate from the generation provider above, you can pull passages from an AWS
-Bedrock Knowledge Base into retrieval. KB passages **augment** the local corpus
-— they join the candidate pool and are reranked, grounded, and cited exactly
-like corpus chunks (they don't replace the Process/Guidebook sources or the
-W3C API). This is how you get content that lives only in a managed KB (e.g. a
-patent-policy FAQ) into answers.
+You can also pull passages from an AWS Bedrock Knowledge Base into retrieval.
+KB passages join the local corpus in the candidate pool and are reranked,
+grounded, and cited like any other chunk. Use it for content that only lives
+in a managed KB.
 
 ```env
 BEDROCK_KB_ENABLED=true
@@ -113,42 +102,38 @@ BEDROCK_KB_MAX_RESULTS=8
 # reuses BEDROCK_API_KEY
 ```
 
-It's independent of the generation provider — you can run KB retrieval with any
-`LLM_PROVIDER` (Ollama, OpenAI-compatible, Bedrock). It uses a **different IAM
-action** (`bedrock:Retrieve` via `bedrock-agent-runtime`), so it can work even
-where `bedrock:InvokeModel` is blocked. KB retrieval failures are non-fatal —
-the local-corpus retrieval still stands.
+KB retrieval is independent of the generation provider and uses a different
+IAM action (`bedrock:Retrieve`). It can work even where `bedrock:InvokeModel`
+is blocked. If it fails, the local-corpus retrieval still runs.
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md). Short version:
+See [ARCHITECTURE.md](ARCHITECTURE.md). In short:
 
-1. **Scope classifier** rejects anything that isn't a W3C Process workflow
+1. The scope classifier rejects anything that is not a W3C Process workflow
    question.
-2. **Task planner + entity resolver** figure out the intent and resolve any
-   specifications or groups against the public W3C API.
-3. **Retrieval** runs against a local corpus of Process, Guidebook, and
-   related policy text, optionally augmented by compiled per-spec context
-   and read-only snippets from official W3C GitHub repos.
-4. **Evidence check** verifies the right sources are present before the
-   model is allowed to synthesize.
-5. **Answer generator** is the model — bounded by the prompt and the
-   retrieved chunks.
-6. **Citation + injection checks** validate the result before it leaves the
-   workflow.
+2. The task planner and entity resolver work out the intent and resolve any
+   specs or groups against the public W3C API.
+3. Retrieval runs against a local corpus of Process, Guidebook, and related
+   policy text, plus optional per-spec context and read-only snippets from
+   official W3C GitHub repos.
+4. The evidence check confirms the right sources are present before the model
+   is allowed to write.
+5. The model writes the answer, bounded by the prompt and the retrieved
+   chunks.
+6. Citation and injection checks validate the result before it is returned.
 
-Every step is logged to a workflow trace that the UI surfaces alongside the
-answer.
+Every step is logged to a workflow trace that the UI shows next to the answer.
 
 ## Safety
 
-- User input is untrusted; conversation history is used only to resolve
-  references in follow-ups, never as authority.
-- Sources are allowlisted by domain (`SOURCE_ALLOWLIST`); nothing else can
-  be cited.
-- W3C Process citations are normative; Guidebook citations are guidance;
-  W3C API + GitHub + compiled context are grounding hints, not authority.
-- Out-of-scope questions return a short refusal.
+- User input is untrusted. Conversation history is used only to resolve
+  references in follow-ups, never as a source.
+- Sources are allowlisted by domain (`SOURCE_ALLOWLIST`). Nothing else can be
+  cited.
+- Process citations are normative. Guidebook citations are guidance. W3C API,
+  GitHub, and compiled context are grounding hints, not authority.
+- Out-of-scope questions get a short refusal.
 
 ## Docker Compose
 
@@ -157,12 +142,12 @@ cp .env.example .env
 docker compose -f deploy/docker-compose.yml up --build
 ```
 
-The compose stack includes Postgres, Redis, Qdrant, and a placeholder vLLM
-service profile (start it only on a GPU host).
+The stack includes Postgres, Redis, Qdrant, and a placeholder vLLM service
+profile (start it only on a GPU host).
 
 ## Evaluation
 
-Structured offline harness (deterministic, no LLM required):
+Offline harness (deterministic, no LLM needed):
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/eval/run
@@ -170,10 +155,9 @@ curl -s -X POST http://127.0.0.1:8000/eval/run
 
 It checks intent classification, source families, citation URLs, entity
 grounding, compiled-context use, required answer terms, and forbidden
-misgrounding terms. The web UI exposes the same run under the `Quality`
-tab.
+misgrounding terms. The web UI runs the same thing under the `Quality` tab.
 
-LLM-as-judge run (requires a provider configured):
+LLM-as-judge run (needs a provider configured):
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/eval/llm-judge
@@ -181,8 +165,8 @@ curl -s -X POST http://127.0.0.1:8000/eval/llm-judge
 
 ## Dense retrieval (optional)
 
-The retriever defaults to BM25 + TF-IDF on the local corpus. To enable
-dense retrieval with Ollama embeddings:
+The retriever defaults to BM25 + TF-IDF on the local corpus. To turn on dense
+retrieval with Ollama embeddings:
 
 ```bash
 ollama pull qwen3-embedding:4b
@@ -195,7 +179,8 @@ RETRIEVAL_DENSE_ENABLED=true
 OLLAMA_EMBEDDING_MODEL=qwen3-embedding:4b
 ```
 
-If the cache or embedding model is missing, retrieval falls back to lexical.
+If the cache or the embedding model is missing, retrieval falls back to
+lexical.
 
 ## Tests
 
