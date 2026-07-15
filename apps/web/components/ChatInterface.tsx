@@ -5,14 +5,12 @@ import { CitationPanel } from "@/components/CitationPanel";
 import { WorkflowPanel } from "@/components/WorkflowPanel";
 import {
   listModels,
-  runEval,
   sendChatStream,
   submitFeedback,
   type ChatResponse,
   type Citation,
   type CompiledContext,
   type DraftContext,
-  type EvalRunResponse,
   type ChatTurn,
   type FeedbackRating,
   type ModelInfo,
@@ -53,7 +51,7 @@ type ConversationMessage = {
   model?: string;
 };
 
-type InspectorTab = "workflow" | "sources" | "entities" | "quality" | "version";
+type InspectorTab = "workflow" | "sources" | "entities" | "version";
 
 export function ChatInterface() {
   const [message, setMessage] = useState("");
@@ -63,9 +61,6 @@ export function ChatInterface() {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedResponse, setSelectedResponse] = useState<ChatResponse | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("workflow");
-  const [evalRun, setEvalRun] = useState<EvalRunResponse | null>(null);
-  const [isEvalLoading, setIsEvalLoading] = useState(false);
-  const [evalError, setEvalError] = useState<string | null>(null);
   // Which server-side provider to use for generation. Selecting one
   // repopulates the model dropdown from that provider's model list. No key
   // ever leaves the server — the request carries only this provider name.
@@ -277,21 +272,6 @@ export function ChatInterface() {
     setInspectorTab(tab);
   }
 
-  async function runQualityEval() {
-    if (isEvalLoading) return;
-    setIsEvalLoading(true);
-    setEvalError(null);
-    setInspectorTab("quality");
-    try {
-      const result = await runEval();
-      setEvalRun(result);
-    } catch (err) {
-      setEvalError(err instanceof Error ? err.message : "Eval request failed");
-    } finally {
-      setIsEvalLoading(false);
-    }
-  }
-
   return (
     <main className="chat-layout">
       <section className="chat-main" aria-labelledby="page-title">
@@ -422,17 +402,6 @@ export function ChatInterface() {
           <button
             type="button"
             role="tab"
-            id="inspector-tab-quality"
-            aria-selected={inspectorTab === "quality"}
-            aria-controls="inspector-panel-quality"
-            className={inspectorTab === "quality" ? "active" : ""}
-            onClick={() => setInspectorTab("quality")}
-          >
-            Quality
-          </button>
-          <button
-            type="button"
-            role="tab"
             id="inspector-tab-version"
             aria-selected={inspectorTab === "version"}
             aria-controls="inspector-panel-version"
@@ -462,16 +431,6 @@ export function ChatInterface() {
             <CitationPanel response={activeResponse} mode="sources" />
           </div>
         ) : null}
-        {inspectorTab === "quality" ? (
-          <div role="tabpanel" id="inspector-panel-quality" aria-labelledby="inspector-tab-quality">
-            <QualityPanel
-              result={evalRun}
-              isLoading={isEvalLoading}
-              error={evalError}
-              onRun={runQualityEval}
-            />
-          </div>
-        ) : null}
         {inspectorTab === "version" ? (
           <div role="tabpanel" id="inspector-panel-version" aria-labelledby="inspector-tab-version">
             <CitationPanel response={activeResponse} mode="version" />
@@ -479,110 +438,6 @@ export function ChatInterface() {
         ) : null}
       </aside>
     </main>
-  );
-}
-
-function QualityPanel({
-  result,
-  isLoading,
-  error,
-  onRun
-}: {
-  result: EvalRunResponse | null;
-  isLoading: boolean;
-  error: string | null;
-  onRun: () => void;
-}) {
-  const failed = result?.results.filter((item) => !item.passed) ?? [];
-  const warnings = result?.results.filter((item) => item.warnings.length) ?? [];
-
-  return (
-    <aside className="source-panel quality-panel" aria-label="Quality evaluation">
-      <div className="quality-header">
-        <div>
-          <p className="eyebrow">Regression harness</p>
-          <h2>Quality</h2>
-        </div>
-        <button className="button-secondary" type="button" onClick={onRun} disabled={isLoading}>
-          {isLoading ? "Running" : "Run eval"}
-        </button>
-      </div>
-
-      {error ? <div className="callout danger">{error}</div> : null}
-
-      {result ? (
-        <>
-          <section className={`quality-score ${result.passed ? "passed" : "failed"}`} aria-label="Eval score">
-            <div>
-              <strong>{Math.round(result.score * 100)}%</strong>
-              <span>{result.passed_count} / {result.total_count} passed</span>
-            </div>
-            <span>{result.passed ? "Passing" : "Needs attention"}</span>
-          </section>
-
-          {failed.length ? (
-            <section className="quality-section" aria-label="Failed eval cases">
-              <h3>Failures</h3>
-              <ul className="quality-case-list">
-                {failed.map((item) => (
-                  <li key={item.name} className="quality-case failed">
-                    <strong>{item.name}</strong>
-                    <p>{item.details}</p>
-                    <QualityTags tags={item.tags} />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : (
-            <div className="callout success">All golden cases are passing.</div>
-          )}
-
-          {warnings.length ? (
-            <section className="quality-section" aria-label="Eval warnings">
-              <h3>Warnings</h3>
-              <ul className="quality-case-list">
-                {warnings.slice(0, 6).map((item) => (
-                  <li key={item.name} className="quality-case warning">
-                    <strong>{item.name}</strong>
-                    <p>{item.warnings.join("; ")}</p>
-                    <QualityTags tags={item.tags} />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
-
-          <details className="diagnostic-details">
-            <summary>All cases</summary>
-            <ul className="quality-case-list compact">
-              {result.results.map((item) => (
-                <li key={item.name} className={`quality-case ${item.passed ? "passed" : "failed"}`}>
-                  <span>{item.passed ? "Pass" : "Fail"}</span>
-                  <strong>{item.name}</strong>
-                  <small>{item.actual_intent ?? "no intent"}</small>
-                </li>
-              ))}
-            </ul>
-          </details>
-        </>
-      ) : (
-        <p className="muted">
-          Run the golden-question harness to check scope, intent, citations, entity grounding,
-          compiled context, next-step focus, and injection resistance.
-        </p>
-      )}
-    </aside>
-  );
-}
-
-function QualityTags({ tags }: { tags: string[] }) {
-  if (!tags.length) return null;
-  return (
-    <div className="diagnostic-chip-group" aria-label="Eval case tags">
-      {tags.map((tag) => (
-        <span key={tag}>{tag}</span>
-      ))}
-    </div>
   );
 }
 
@@ -1043,6 +898,12 @@ function ResponseDetails({ response }: { response: ChatResponse }) {
   );
 }
 
+// The server's ChatTurn caps content at 4000 chars. History is only used to
+// resolve references like "this" / "that" in a follow-up, so we cap each turn
+// well under that. Without this cap a long previous answer overflowed the
+// limit and 422'd the next request (a fresh tab, with empty history, worked).
+const HISTORY_TURN_MAX_CHARS = 2000;
+
 function toChatHistory(messages: ConversationMessage[]): ChatTurn[] {
   return messages
     .filter((item) => !item.status)
@@ -1052,13 +913,14 @@ function toChatHistory(messages: ConversationMessage[]): ChatTurn[] {
     .filter((item) => item.content.trim().length > 0)
     .map((item) => ({
       role: item.role,
-      content: item.content
+      content: item.content.slice(0, HISTORY_TURN_MAX_CHARS)
     }))
     .slice(-8);
 }
 
 type AnswerBlock =
   | { type: "paragraph"; text: string }
+  | { type: "heading"; text: string }
   | { type: "ordered"; items: string[] }
   | { type: "unordered"; items: string[] };
 
@@ -1072,6 +934,17 @@ function AnswerContent({ text, citations }: { text: string; citations?: Citation
         if (block.type === "paragraph") {
           return (
             <p key={`${block.type}-${index}`}>{renderInline(block.text, sources)}</p>
+          );
+        }
+
+        if (block.type === "heading") {
+          // Models sometimes emit a "## heading" even though we ask them not
+          // to. Render it as a bold line so it reads as an intentional
+          // sub-heading instead of literal "##" text.
+          return (
+            <p key={`${block.type}-${index}`} className="answer-heading">
+              <strong>{renderInline(block.text, sources)}</strong>
+            </p>
           );
         }
 
@@ -1224,6 +1097,14 @@ function parseAnswerBlocks(text: string): AnswerBlock[] {
       // treating that as a list boundary makes each item render as its own
       // single-item <ol>, which the browser dutifully numbers "1." every
       // time. Only a non-list, non-empty line (handled below) closes the list.
+      continue;
+    }
+
+    const heading = line.match(/^#{1,6}\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "heading", text: heading[1].replace(/\s*#+\s*$/, "").trim() });
       continue;
     }
 

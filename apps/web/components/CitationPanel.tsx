@@ -27,8 +27,11 @@ export function CitationPanel({
           <h2>Sources</h2>
           {response?.citations.length ? (
             <ul className="source-list">
-              {response.citations.map((citation) => (
+              {response.citations.map((citation, index) => (
                 <li className="source-item" key={`${citation.url}-${citation.heading_path}`}>
+                  {/* Matches the [S1], [S2] ... labels the answer text uses:
+                      the answer's [Sn] is the nth source in this list. */}
+                  <span className="source-tag">S{index + 1}</span>
                   <span className={`source-badge source-${citation.source_type}`}>
                     {sourceLabel(citation.source_type)}
                   </span>

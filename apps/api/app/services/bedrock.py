@@ -104,7 +104,7 @@ class BedrockClient:
         region: str,
         api_key: str | None = None,
         timeout_seconds: float = 120,
-        max_answer_tokens: int = 8192,
+        max_answer_tokens: int = 4096,
     ) -> None:
         self.region = region
         self.api_key = api_key

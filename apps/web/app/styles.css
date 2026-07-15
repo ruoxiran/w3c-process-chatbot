@@ -744,6 +744,11 @@ button:disabled {
   gap: var(--w3c-space-3);
 }
 
+.answer-heading {
+  font-weight: 700;
+  margin-top: var(--w3c-space-3);
+}
+
 .answer-body p,
 .answer-body ol,
 .answer-body ul {
@@ -1045,6 +1050,20 @@ button:disabled {
   font-weight: 700;
   margin-bottom: var(--w3c-space-2);
   padding: 0.1rem 0.4rem;
+}
+
+/* Matches the [S1], [S2] ... labels used in the answer text. */
+.source-tag {
+  display: inline-block;
+  margin-right: 0.4rem;
+  margin-bottom: var(--w3c-space-2);
+  padding: 0.1rem 0.4rem;
+  border-radius: var(--w3c-radius);
+  background: var(--w3c-blue);
+  color: #fff;
+  font-family: var(--w3c-mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  font-weight: 700;
 }
 
 .source-process {

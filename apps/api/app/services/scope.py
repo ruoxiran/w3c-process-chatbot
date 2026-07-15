@@ -27,6 +27,10 @@ STRONG_TOPIC_KEYWORDS = frozenset([
     "working group", "interest group", "community group", "工作组",
     "working draft", "specification", "标准",
     "workshop", "workshops", "tpac", "研讨会",
+    # WBS = Web-Based Survey, the W3C tool for AC reviews / questionnaires /
+    # straw polls. A real Process/Guidebook term; add it so "what is a WBS
+    # form?" is recognised as in scope.
+    "wbs", "web-based survey",
 ])
 
 PROCESS_TOPICS = {
@@ -172,7 +176,7 @@ PROCESS_TOPICS = {
         "联络",
         "职责",
     ],
-    "review": ["wide review", "horizontal review", "ac review", "transition", "review", "审查", "转换"],
+    "review": ["wide review", "horizontal review", "ac review", "transition", "review", "wbs", "web-based survey", "questionnaire", "审查", "转换"],
     "objection": ["formal objection", "appeal", "异议", "申诉"],
     "policy": [
         "patent",

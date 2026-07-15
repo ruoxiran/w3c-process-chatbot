@@ -128,7 +128,7 @@ class OpenAICompatibleClient:
             # answers, and thinking models (Kimi k2.5) also spend part of this
             # budget on hidden reasoning before emitting text. 8192 leaves room
             # for a long grounded answer without truncating mid-sentence.
-            max_tokens=8192,
+            max_tokens=4096,
         )
         return OpenAICompatibleGeneration(text=_clean_model_text(text), model=model)
 
@@ -189,7 +189,7 @@ class OpenAICompatibleClient:
             "temperature": 0.1,
             # Matches the sync path: a generous ceiling for thorough answers,
             # with headroom for thinking models whose reasoning shares it.
-            "max_tokens": 8192,
+            "max_tokens": 4096,
             "stream": True,
         }
         # Mirror ``_post_with_backoff`` for the streaming connection: retry
